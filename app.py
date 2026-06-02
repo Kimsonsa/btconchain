@@ -946,14 +946,6 @@ else:
         unsafe_allow_html=True,
     )
 
-# ═══════ 에러 ═════════════════════════════════════════════════════════════════
-errors = report.get("errors", {})
-if errors:
-    err_items = " | ".join([f"{k}: {v}" for k, v in errors.items()])
-    st.markdown(
-        f'<div class="error-box">⚠️ 일부 데이터 소스에서 수집 실패: {err_items}</div>',
-        unsafe_allow_html=True,
-    )
 
 # ═══════ Raw JSON ═════════════════════════════════════════════════════════════
 with st.expander("📋 원본 JSON 데이터 보기 (개발자용)"):
