@@ -292,6 +292,181 @@ def fetch_bitcoin_data_advanced():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 라이트닝 네트워크 / 스테이블코인 / DeFi / 파생상품 / 트렌딩 / 시총 상위
+# ─────────────────────────────────────────────────────────────────────────────
+def fetch_lightning_network():
+    """라이트닝 네트워크 통계 (mempool.space)."""
+    try:
+        data = get_json("https://mempool.space/api/v1/lightning/statistics/latest")
+        latest = data.get("latest", {})
+        channel_count = latest.get("channel_count")
+        node_count = latest.get("node_count")
+        total_capacity = safe_float(latest.get("total_capacity"))
+        avg_capacity = latest.get("avg_capacity")
+        med_fee_rate = latest.get("med_fee_rate")
+        return {
+            "channel_count": int(channel_count) if channel_count is not None else 0,
+            "node_count": int(node_count) if node_count is not None else 0,
+            "total_capacity_btc": total_capacity / 100_000_000 if total_capacity else 0.0,
+            "avg_capacity_sat": int(avg_capacity) if avg_capacity is not None else 0,
+            "med_fee_rate": int(med_fee_rate) if med_fee_rate is not None else 0,
+        }
+    except Exception as e:
+        print("[fetch_lightning_network] 오류: %s" % e)
+        return {}
+
+
+def fetch_stablecoin_mcap():
+    """주요 스테이블코인 시가총액 (DefiLlama)."""
+    try:
+        data = get_json("https://stablecoins.llama.fi/stablecoins?includePrices=false")
+        assets = data.get("peggedAssets", [])
+        target_symbols = {"USDT", "USDC", "DAI", "BUSD", "TUSD", "FDUSD", "USDD", "PYUSD"}
+        coins = []
+        total_mcap = 0.0
+        for asset in assets:
+            circ = asset.get("circulating", {})
+            mcap = safe_float(circ.get("peggedUSD"))
+            if mcap is None:
+                mcap = 0.0
+            total_mcap += mcap
+            symbol = asset.get("symbol", "")
+            if symbol in target_symbols:
+                coins.append({
+                    "name": asset.get("name", ""),
+                    "symbol": symbol,
+                    "mcap_usd": mcap,
+                })
+        coins.sort(key=lambda x: x["mcap_usd"], reverse=True)
+        coins = coins[:8]
+        return {
+            "total_mcap_usd": total_mcap,
+            "coins": coins,
+            "coin_count": len(coins),
+        }
+    except Exception as e:
+        print("[fetch_stablecoin_mcap] 오류: %s" % e)
+        return {}
+
+
+def fetch_defi_tvl():
+    """DeFi 체인별 TVL (DefiLlama)."""
+    try:
+        data = get_json("https://api.llama.fi/v2/chains")
+        chains = []
+        total_tvl = 0.0
+        for item in data:
+            tvl = safe_float(item.get("tvl"))
+            if tvl is None:
+                tvl = 0.0
+            total_tvl += tvl
+            chains.append({
+                "name": item.get("name", ""),
+                "tvl_usd": tvl,
+            })
+        chains.sort(key=lambda x: x["tvl_usd"], reverse=True)
+        top_chains = chains[:8]
+        return {
+            "total_tvl_usd": total_tvl,
+            "chains": top_chains,
+            "chain_count": len(data),
+        }
+    except Exception as e:
+        print("[fetch_defi_tvl] 오류: %s" % e)
+        return {}
+
+
+def fetch_derivatives():
+    """BTC 파생상품(선물) 현황 (CoinGecko)."""
+    try:
+        data = get_json("https://api.coingecko.com/api/v3/derivatives")
+        btc_items = [d for d in data if d.get("index_id") == "BTC"]
+        total_oi = 0.0
+        total_vol = 0.0
+        funding_rates = []
+        exchanges = []
+        for item in btc_items:
+            oi = safe_float(item.get("open_interest")) or 0.0
+            vol_str = item.get("trade_volume_24h_btc", "0")
+            vol = safe_float(vol_str) or 0.0
+            spread = safe_float(item.get("bid_ask_spread")) or 0.0
+            fr = safe_float(item.get("funding_rate")) or 0.0
+            total_oi += oi
+            total_vol += vol
+            if fr != 0.0:
+                funding_rates.append(fr)
+            exchanges.append({
+                "market": item.get("market", ""),
+                "open_interest_usd": oi,
+                "volume_24h_usd": vol,
+                "funding_rate": fr,
+                "spread_pct": spread,
+            })
+        exchanges.sort(key=lambda x: x["open_interest_usd"], reverse=True)
+        avg_fr = sum(funding_rates) / len(funding_rates) if funding_rates else 0.0
+        return {
+            "total_open_interest_usd": total_oi,
+            "total_volume_24h_usd": total_vol,
+            "top_exchanges": exchanges[:5],
+            "avg_funding_rate": avg_fr,
+        }
+    except Exception as e:
+        print("[fetch_derivatives] 오류: %s" % e)
+        return {}
+
+
+def fetch_trending_coins():
+    """트렌딩 코인 (CoinGecko)."""
+    try:
+        data = get_json("https://api.coingecko.com/api/v3/search/trending")
+        coins_raw = data.get("coins", [])
+        coins = []
+        for entry in coins_raw[:7]:
+            item = entry.get("item", {})
+            coins.append({
+                "name": item.get("name", ""),
+                "symbol": item.get("symbol", ""),
+                "market_cap_rank": item.get("market_cap_rank"),
+                "price_btc": safe_float(item.get("price_btc")) or 0.0,
+                "thumb": item.get("thumb", ""),
+            })
+        return {
+            "coins": coins,
+            "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+    except Exception as e:
+        print("[fetch_trending_coins] 오류: %s" % e)
+        return {}
+
+
+def fetch_top_coins():
+    """시가총액 상위 10개 코인 (CoinGecko)."""
+    try:
+        url = ("https://api.coingecko.com/api/v3/coins/markets"
+               "?vs_currency=usd&order=market_cap_desc&per_page=10&page=1"
+               "&price_change_percentage=24h,7d")
+        data = get_json(url)
+        coins = []
+        for d in data:
+            coins.append({
+                "name": d.get("name", ""),
+                "symbol": d.get("symbol", ""),
+                "image": d.get("image", ""),
+                "price_usd": safe_float(d.get("current_price")) or 0.0,
+                "market_cap_usd": safe_float(d.get("market_cap")) or 0.0,
+                "volume_24h_usd": safe_float(d.get("total_volume")) or 0.0,
+                "change_24h_pct": safe_float(d.get("price_change_percentage_24h_in_currency")),
+                "change_7d_pct": safe_float(d.get("price_change_percentage_7d_in_currency")),
+            })
+        return {
+            "coins": coins,
+        }
+    except Exception as e:
+        print("[fetch_top_coins] 오류: %s" % e)
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 거래소 보유량 (DeFiLlama 무료 API)
 # ─────────────────────────────────────────────────────────────────────────────
 CEX_SLUGS = [

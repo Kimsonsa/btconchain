@@ -8,6 +8,12 @@ import streamlit as st
 from btc_onchain import (
     collect,
     fetch_cex_reserves,
+    fetch_lightning_network,
+    fetch_stablecoin_mcap,
+    fetch_defi_tvl,
+    fetch_derivatives,
+    fetch_trending_coins,
+    fetch_top_coins,
     interpret_mvrv,
     interpret_nupl,
     interpret_puell,
@@ -410,6 +416,30 @@ def cex_delta_html(cur, prev, threshold=50000):
     color = "#cf222e" if diff > 0 else "#1a7f37"  # 증가=빨강(매도압력), 감소=초록(축적)
     return f'<span style="color:{color};font-size:0.68rem;font-weight:600;"> {arrow}{fmt_usd(abs(diff))}</span>'
 
+
+@st.cache_data(ttl=600)
+def load_lightning():
+    return fetch_lightning_network()
+
+@st.cache_data(ttl=600)
+def load_stablecoins():
+    return fetch_stablecoin_mcap()
+
+@st.cache_data(ttl=600)
+def load_defi_tvl():
+    return fetch_defi_tvl()
+
+@st.cache_data(ttl=600)
+def load_derivatives():
+    return fetch_derivatives()
+
+@st.cache_data(ttl=600)
+def load_trending():
+    return fetch_trending_coins()
+
+@st.cache_data(ttl=600)
+def load_top_coins():
+    return fetch_top_coins()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 메인 UI
@@ -946,6 +976,209 @@ else:
         unsafe_allow_html=True,
     )
 
+# ═══════ [9] 라이트닝 네트워크 ════════════════════════════════════════════════
+st.markdown('<div class="section-header">⚡ 라이트닝 네트워크 (Lightning Network)</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 비트코인의 <b>2계층 결제 네트워크</b>입니다. 소액 결제를 빠르고 저렴하게 처리합니다. '
+    '채널/노드 수가 늘어나면 비트코인의 실제 결제 수단 활용도가 높아지고 있다는 의미입니다.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+ln_data = load_lightning()
+if ln_data:
+    l1, l2, l3, l4, l5 = st.columns(5)
+    with l1:
+        st.markdown(f'<div class="metric-card"><div class="metric-label">활성 채널 수</div><div class="metric-sublabel">결제를 주고받는 통로의 수. 많을수록 네트워크가 촘촘함</div><div class="metric-value-sm">{fmt_num(ln_data.get("channel_count"))}</div></div>', unsafe_allow_html=True)
+    with l2:
+        st.markdown(f'<div class="metric-card"><div class="metric-label">노드 수</div><div class="metric-sublabel">네트워크에 참여 중인 컴퓨터(서버) 수. 탈중앙화 지표</div><div class="metric-value-sm">{fmt_num(ln_data.get("node_count"))}</div></div>', unsafe_allow_html=True)
+    with l3:
+        cap = ln_data.get("total_capacity_btc", 0)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">총 용량</div><div class="metric-sublabel">채널에 잠긴 BTC 총량. 네트워크의 유동성 규모</div><div class="metric-value-sm">{cap:,.2f} BTC</div></div>', unsafe_allow_html=True)
+    with l4:
+        avg = ln_data.get("avg_capacity_sat", 0)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">채널당 평균 용량</div><div class="metric-sublabel">채널 하나의 평균 BTC 보유량 (사토시 단위)</div><div class="metric-value-sm">{fmt_num(avg)} sat</div></div>', unsafe_allow_html=True)
+    with l5:
+        fee = ln_data.get("med_fee_rate", 0)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">중간 수수료율</div><div class="metric-sublabel">결제를 중계할 때 받는 수수료의 중간값</div><div class="metric-value-sm">{fee} ppm</div></div>', unsafe_allow_html=True)
+
+# ═══════ [10] 스테이블코인 시가총액 ═══════════════════════════════════════════
+st.markdown('<div class="section-header">💵 스테이블코인 시가총액</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 USDT, USDC 같은 <b>달러 연동 코인</b>의 총 발행량입니다. '
+    '스테이블코인 시총이 <b>증가</b>하면 시장에 대기 자금(매수 화력)이 늘어나는 것이고, '
+    '<b>감소</b>하면 자금이 빠져나가고 있다는 신호입니다.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+sc_data = load_stablecoins()
+if sc_data and sc_data.get("coins"):
+    st.markdown(
+        f'<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:12px;padding:1rem 1.5rem;margin-bottom:1rem;text-align:center;">'
+        f'<span style="font-size:0.85rem;color:#166534;">스테이블코인 전체 시가총액</span><br>'
+        f'<span style="font-size:1.6rem;font-weight:700;color:#166534;">{fmt_usd(sc_data["total_mcap_usd"])}</span>'
+        f'<span style="color:#4ade80;font-size:0.8rem;margin-left:0.5rem;">({sc_data.get("coin_count",0)}종)</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    sc_rows = []
+    for c in sc_data["coins"]:
+        pct = (c["mcap_usd"] / sc_data["total_mcap_usd"] * 100) if sc_data["total_mcap_usd"] else 0
+        sc_rows.append(
+            f'<tr><td style="font-weight:600;">{c["symbol"]}</td><td>{c["name"]}</td>'
+            f'<td>{fmt_usd(c["mcap_usd"])}</td><td>{pct:.1f}%</td></tr>'
+        )
+    sc_table = (
+        '<table class="cex-table"><thead><tr><th style="text-align:left;">심볼</th><th style="text-align:left;">이름</th>'
+        '<th>시가총액</th><th>비중</th></tr></thead><tbody>'
+        + "".join(sc_rows) + '</tbody></table>'
+    )
+    st.markdown(sc_table, unsafe_allow_html=True)
+
+# ═══════ [11] DeFi TVL ════════════════════════════════════════════════════════
+st.markdown('<div class="section-header">🏗️ DeFi TVL (탈중앙금융 예치 자산)</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 <b>TVL(Total Value Locked)</b> = 디파이 프로토콜에 예치된 자산 총액. '
+    '이더리움, 솔라나 등 각 블록체인 위의 대출·스왑·스테이킹에 묶인 돈의 규모입니다. '
+    'TVL이 <b>높을수록</b> 해당 체인의 생태계가 활발하다는 뜻입니다.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+tvl_data = load_defi_tvl()
+if tvl_data and tvl_data.get("chains"):
+    st.markdown(
+        f'<div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:12px;padding:1rem 1.5rem;margin-bottom:1rem;text-align:center;">'
+        f'<span style="font-size:0.85rem;color:#1e40af;">DeFi 전체 TVL</span><br>'
+        f'<span style="font-size:1.6rem;font-weight:700;color:#1e40af;">{fmt_usd(tvl_data["total_tvl_usd"])}</span>'
+        f'<span style="color:#60a5fa;font-size:0.8rem;margin-left:0.5rem;">({tvl_data.get("chain_count",0)}개 체인)</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    tvl_rows = []
+    max_tvl = tvl_data["chains"][0]["tvl_usd"] if tvl_data["chains"] else 1
+    chain_colors = ["#627eea","#f0b90b","#00d4aa","#e84142","#7b3fe4","#1da1f2","#ff6b35","#26a17b"]
+    for i, ch in enumerate(tvl_data["chains"]):
+        pct = (ch["tvl_usd"] / tvl_data["total_tvl_usd"] * 100) if tvl_data["total_tvl_usd"] else 0
+        bar_w = (ch["tvl_usd"] / max_tvl * 100) if max_tvl else 0
+        color = chain_colors[i % len(chain_colors)]
+        tvl_rows.append(
+            f'<tr><td style="font-weight:600;">{ch["name"]}</td>'
+            f'<td>{fmt_usd(ch["tvl_usd"])}</td>'
+            f'<td><div style="display:flex;align-items:center;gap:6px;justify-content:flex-end;">'
+            f'<span style="font-size:0.75rem;color:#656d76;">{pct:.1f}%</span>'
+            f'<div class="cex-bar-outer" style="width:80px;"><div class="cex-bar-inner" style="width:{bar_w:.0f}%;background:{color};"></div></div>'
+            f'</div></td></tr>'
+        )
+    tvl_table = (
+        '<table class="cex-table"><thead><tr><th style="text-align:left;">블록체인</th>'
+        '<th>TVL</th><th style="width:140px;">비중</th></tr></thead><tbody>'
+        + "".join(tvl_rows) + '</tbody></table>'
+    )
+    st.markdown(tvl_table, unsafe_allow_html=True)
+
+# ═══════ [12] BTC 선물 시장 ═══════════════════════════════════════════════════
+st.markdown('<div class="section-header">📊 BTC 선물 시장 (Derivatives)</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 <b>미결제약정(OI)</b> = 아직 청산/만기되지 않은 선물 계약의 총액. OI가 급증하면 큰 변동이 임박할 수 있습니다. '
+    '<b>펀딩레이트</b> = 롱(매수)·숏(매도) 포지션 간 균형 비용. '
+    '양수이면 매수세 우위, 음수이면 매도세 우위를 뜻합니다.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+dv_data = load_derivatives()
+if dv_data and dv_data.get("top_exchanges"):
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        st.markdown(f'<div class="metric-card"><div class="metric-label">BTC 미결제약정 (OI)</div><div class="metric-sublabel">전 세계 거래소의 BTC 선물 미결제 포지션 합계</div><div class="metric-value-sm">{fmt_usd(dv_data.get("total_open_interest_usd"))}</div></div>', unsafe_allow_html=True)
+    with d2:
+        fr = dv_data.get("avg_funding_rate", 0)
+        fr_color = "#cf222e" if fr and fr > 0.01 else "#1a7f37" if fr and fr < -0.01 else "#656d76"
+        fr_signal = "매수 과열" if fr and fr > 0.05 else "매수 우위" if fr and fr > 0 else "매도 우위" if fr and fr < 0 else "중립"
+        st.markdown(f'<div class="metric-card"><div class="metric-label">평균 펀딩레이트</div><div class="metric-sublabel">양수=롱(매수)이 수수료 지불, 음수=숏(매도)이 지불</div><div class="metric-value-sm" style="color:{fr_color};">{fr:.4f}%</div><div class="interp-badge">{fr_signal}</div></div>', unsafe_allow_html=True)
+    with d3:
+        vol = dv_data.get("total_volume_24h_usd", 0)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">24시간 거래량</div><div class="metric-sublabel">BTC 선물 일일 거래 규모</div><div class="metric-value-sm">{fmt_usd(vol) if vol else "N/A"}</div></div>', unsafe_allow_html=True)
+
+    # 거래소별 OI 테이블
+    dv_rows = []
+    for ex in dv_data["top_exchanges"][:5]:
+        fr_v = ex.get("funding_rate", 0)
+        fr_str = f'{fr_v:.4f}%' if fr_v else '-'
+        dv_rows.append(
+            f'<tr><td style="font-weight:600;">{ex["market"]}</td>'
+            f'<td>{fmt_usd(ex["open_interest_usd"])}</td>'
+            f'<td>{fr_str}</td>'
+            f'<td>{ex.get("spread_pct", 0):.4f}%</td></tr>'
+        )
+    dv_table = (
+        '<table class="cex-table"><thead><tr><th style="text-align:left;">거래소</th>'
+        '<th>미결제약정</th><th>펀딩레이트</th><th>스프레드</th></tr></thead><tbody>'
+        + "".join(dv_rows) + '</tbody></table>'
+    )
+    st.markdown(dv_table, unsafe_allow_html=True)
+
+# ═══════ [13] 시가총액 TOP 10 ════════════════════════════════════════════════
+st.markdown('<div class="section-header">🏆 시가총액 TOP 10</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 시가총액 기준 상위 10개 암호화폐의 현재 가격, 24시간/7일 변동률입니다. '
+    '비트코인 외 다른 코인들의 흐름을 한눈에 파악할 수 있습니다.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+tc_data = load_top_coins()
+if tc_data and tc_data.get("coins"):
+    tc_rows = []
+    for i, coin in enumerate(tc_data["coins"]):
+        chg24 = coin.get("change_24h_pct") or 0
+        chg7d = coin.get("change_7d_pct") or 0
+        c24 = "#cf222e" if chg24 < 0 else "#1a7f37"
+        c7d = "#cf222e" if chg7d < 0 else "#1a7f37"
+        tc_rows.append(
+            f'<tr><td style="font-weight:600;">{i+1}</td>'
+            f'<td style="font-weight:600;">{coin["symbol"].upper()}</td>'
+            f'<td>{coin["name"]}</td>'
+            f'<td>{fmt_usd(coin["price_usd"])}</td>'
+            f'<td>{fmt_usd(coin["market_cap_usd"])}</td>'
+            f'<td style="color:{c24};font-weight:600;">{chg24:+.1f}%</td>'
+            f'<td style="color:{c7d};font-weight:600;">{chg7d:+.1f}%</td></tr>'
+        )
+    tc_table = (
+        '<table class="cex-table"><thead><tr>'
+        '<th style="text-align:left;">#</th><th style="text-align:left;">심볼</th>'
+        '<th style="text-align:left;">이름</th><th>가격</th><th>시가총액</th>'
+        '<th>24h</th><th>7일</th></tr></thead><tbody>'
+        + "".join(tc_rows) + '</tbody></table>'
+    )
+    st.markdown(tc_table, unsafe_allow_html=True)
+
+# ═══════ [14] 트렌딩 코인 ════════════════════════════════════════════════════
+st.markdown('<div class="section-header">🔥 지금 뜨는 코인 (Trending)</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 CoinGecko에서 <b>최근 24시간 동안 가장 많이 검색된</b> 코인입니다. '
+    '시장 참여자들이 어떤 코인에 관심을 갖고 있는지 보여주는 심리 지표입니다.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+tr_data = load_trending()
+if tr_data and tr_data.get("coins"):
+    tr_cols = st.columns(min(len(tr_data["coins"]), 7))
+    for i, coin in enumerate(tr_data["coins"][:7]):
+        with tr_cols[i]:
+            rank = coin.get("market_cap_rank") or "-"
+            st.markdown(
+                f'<div class="metric-card" style="text-align:center;padding:1rem;">'
+                f'<div style="font-size:1.5rem;margin-bottom:0.3rem;">🔥</div>'
+                f'<div style="font-weight:700;font-size:0.9rem;">{coin["symbol"].upper()}</div>'
+                f'<div style="color:#656d76;font-size:0.72rem;">{coin["name"]}</div>'
+                f'<div style="color:#8b949e;font-size:0.7rem;margin-top:0.3rem;">시총 순위: #{rank}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
 # ═══════ Raw JSON ═════════════════════════════════════════════════════════════
 with st.expander("📋 원본 JSON 데이터 보기 (개발자용)"):
