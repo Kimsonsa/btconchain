@@ -621,6 +621,12 @@ def save_outputs(report, out_dir=OUTPUT_DIR):
 # main
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
+    # Windows 콘솔(cp949 등)에서 유니코드 출력 깨짐 방지
+    if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stderr.encoding and sys.stderr.encoding.lower().replace("-", "") != "utf8":
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     p = argparse.ArgumentParser(description="비트코인 온체인 데이터 총정리 (무료 API)")
     p.add_argument("--json", action="store_true", help="결과를 JSON으로 출력")
     p.add_argument("--save", action="store_true", help="JSON 저장 + CSV 시계열 누적")
