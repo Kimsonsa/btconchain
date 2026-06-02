@@ -654,55 +654,40 @@ with a4:
 cm_date = va.get("cm_date", "-")
 st.markdown(f'<div class="section-header">📐 가치 평가 지표 <span style="color:#8b949e;font-size:0.8rem;font-weight:400;">기준일: {cm_date}</span></div>', unsafe_allow_html=True)
 
-v1, v2, v3, v4, v5 = st.columns(5)
-
 mvrv = va.get("mvrv")
 nupl = va.get("nupl")
+has_valuation = mvrv is not None or nupl is not None or va.get("realized_price_usd") is not None
 
-with v1:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">시장가/실현가 비율</div>
-        <div class="metric-sublabel">현재 시장가치 ÷ 모든 코인의 평균 매입가 기반 가치. 1 미만이면 전체적으로 손실, 높으면 과열</div>
-        <div class="metric-value-sm">{"%.2f" % mvrv if mvrv else "-"}</div>
-        <div class="interp-badge">{interpret_mvrv(mvrv) or "데이터 없음"}</div>
-    </div>
-    """, unsafe_allow_html=True)
-with v2:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">순미실현 손익</div>
-        <div class="metric-sublabel">아직 팔지 않은 코인들의 전체 손익 상태. 0 미만이면 시장 전반이 손실 중</div>
-        <div class="metric-value-sm">{"%.3f" % nupl if nupl is not None else "-"}</div>
-        <div class="interp-badge">{interpret_nupl(nupl) or "데이터 없음"}</div>
-    </div>
-    """, unsafe_allow_html=True)
-with v3:
-    rp = va.get('realized_price_usd')
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">평균 매입 가격</div>
-        <div class="metric-sublabel">모든 비트코인이 마지막으로 이동한 시점의 평균 가격 (시장의 평균 원가)</div>
-        <div class="metric-value-sm">{fmt_usd(rp)}</div>
-    </div>
-    """, unsafe_allow_html=True)
-with v4:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">실현 시가총액</div>
-        <div class="metric-sublabel">각 코인을 마지막 이동 시점 가격으로 계산한 총 가치</div>
-        <div class="metric-value-sm">{fmt_usd(va.get('realized_cap_usd'))}</div>
-    </div>
-    """, unsafe_allow_html=True)
-with v5:
-    nvt = va.get('nvt')
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">네트워크 가치/거래량</div>
-        <div class="metric-sublabel">시가총액 ÷ 일일 거래량. 주식의 PER처럼 네트워크 가치를 평가</div>
-        <div class="metric-value-sm">{"%.1f" % nvt if nvt else "-"}</div>
-    </div>
-    """, unsafe_allow_html=True)
+if has_valuation:
+    v1, v2, v3, v4, v5 = st.columns(5)
+    with v1:
+        interp_m = interpret_mvrv(mvrv)
+        badge_m = f'<div class="interp-badge">{interp_m}</div>' if interp_m else ""
+        st.markdown(f'<div class="metric-card"><div class="metric-label">시장가/실현가 비율</div><div class="metric-sublabel">현재 시장가치 ÷ 모든 코인의 평균 매입가 기반 가치. 1 미만이면 전체적으로 손실, 높으면 과열</div><div class="metric-value-sm">{"%.2f" % mvrv if mvrv else "-"}</div>{badge_m}</div>', unsafe_allow_html=True)
+    with v2:
+        interp_n = interpret_nupl(nupl)
+        badge_n = f'<div class="interp-badge">{interp_n}</div>' if interp_n else ""
+        st.markdown(f'<div class="metric-card"><div class="metric-label">순미실현 손익</div><div class="metric-sublabel">아직 팔지 않은 코인들의 전체 손익 상태. 0 미만이면 시장 전반이 손실 중</div><div class="metric-value-sm">{"%.3f" % nupl if nupl is not None else "-"}</div>{badge_n}</div>', unsafe_allow_html=True)
+    with v3:
+        rp = va.get('realized_price_usd')
+        st.markdown(f'<div class="metric-card"><div class="metric-label">평균 매입 가격</div><div class="metric-sublabel">모든 비트코인이 마지막으로 이동한 시점의 평균 가격 (시장의 평균 원가)</div><div class="metric-value-sm">{fmt_usd(rp)}</div></div>', unsafe_allow_html=True)
+    with v4:
+        st.markdown(f'<div class="metric-card"><div class="metric-label">실현 시가총액</div><div class="metric-sublabel">각 코인을 마지막 이동 시점 가격으로 계산한 총 가치</div><div class="metric-value-sm">{fmt_usd(va.get("realized_cap_usd"))}</div></div>', unsafe_allow_html=True)
+    with v5:
+        nvt = va.get('nvt')
+        st.markdown(f'<div class="metric-card"><div class="metric-label">네트워크 가치/거래량</div><div class="metric-sublabel">시가총액 ÷ 일일 거래량. 주식의 PER처럼 네트워크 가치를 평가</div><div class="metric-value-sm">{"%.1f" % nvt if nvt else "-"}</div></div>', unsafe_allow_html=True)
+else:
+    st.markdown(
+        '<div style="background:#fff8e1;border:1px solid #f0d060;border-radius:12px;'
+        'padding:1.2rem 1.5rem;color:#6d5c00;font-size:0.88rem;line-height:1.7;">'
+        '📊 <b>가치 평가 데이터를 현재 가져올 수 없습니다</b><br>'
+        'Coin Metrics 무료 API가 일시적으로 응답하지 않고 있습니다 (403 오류).<br>'
+        '이 지표들(MVRV, NUPL, 실현가격 등)은 API가 복구되면 자동으로 표시됩니다.<br>'
+        '<span style="color:#8b7500;font-size:0.78rem;">'
+        '💡 참고: 아래 "고급 온체인 지표" 섹션의 MVRV Z-Score는 별도 소스에서 제공되어 확인 가능할 수 있습니다.</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 # ═══════ [6] 시장 심리 ═══════════════════════════════════════════════════════
 st.markdown('<div class="section-header">🧠 시장 심리 (투자자들의 감정 상태)</div>', unsafe_allow_html=True)
@@ -859,21 +844,8 @@ if cex_data and cex_data.get("exchanges"):
     # ── 거래소별 상세 테이블 ──
     max_total = max(e["total_usd"] for e in cex_exchanges) if cex_exchanges else 1
 
-    # 테이블 헤더
-    table_html = """
-    <table class="cex-table">
-    <thead>
-        <tr>
-            <th>거래소</th>
-            <th>BTC 보유량</th>
-            <th>ETH 보유량</th>
-            <th>SOL 보유량</th>
-            <th>총 보유량</th>
-            <th style="width:120px;">비중</th>
-        </tr>
-    </thead>
-    <tbody>
-    """
+    # 테이블 헤더 — 들여쓰기 없이 시작해야 Streamlit이 코드블록으로 오인하지 않음
+    table_rows = []
 
     # 거래소 정렬 (총 보유량 내림차순)
     sorted_exchanges = sorted(cex_exchanges, key=lambda x: x["total_usd"], reverse=True)
@@ -893,66 +865,71 @@ if cex_data and cex_data.get("exchanges"):
         eth_v = ex["chains"].get("ETH", 0)
         sol_v = ex["chains"].get("SOL", 0)
 
-        table_html += f"""
-        <tr>
-            <td>{ex['icon']} {ex['name']}</td>
-            <td>{fmt_usd(btc_v) if btc_v else '-'}</td>
-            <td>{fmt_usd(eth_v) if eth_v else '-'}</td>
-            <td>{fmt_usd(sol_v) if sol_v else '-'}</td>
-            <td>{fmt_usd(ex['total_usd'])}</td>
-            <td>
-                <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end;">
-                    <span style="font-size:0.75rem; color:#656d76; min-width:36px; text-align:right;">{pct:.1f}%</span>
-                    <div class="cex-bar-outer" style="width:70px;">
-                        <div class="cex-bar-inner" style="width:{bar_width:.1f}%; background:{bar_color};"></div>
-                    </div>
-                </div>
-            </td>
-        </tr>
-        """
+        table_rows.append(
+            f'<tr><td>{ex["icon"]} {ex["name"]}</td>'
+            f'<td>{fmt_usd(btc_v) if btc_v else "-"}</td>'
+            f'<td>{fmt_usd(eth_v) if eth_v else "-"}</td>'
+            f'<td>{fmt_usd(sol_v) if sol_v else "-"}</td>'
+            f'<td>{fmt_usd(ex["total_usd"])}</td>'
+            f'<td><div style="display:flex;align-items:center;gap:6px;justify-content:flex-end;">'
+            f'<span style="font-size:0.75rem;color:#656d76;min-width:36px;text-align:right;">{pct:.1f}%</span>'
+            f'<div class="cex-bar-outer" style="width:70px;">'
+            f'<div class="cex-bar-inner" style="width:{bar_width:.1f}%;background:{bar_color};"></div>'
+            f'</div></div></td></tr>'
+        )
 
     # 합계 행
-    table_html += f"""
-    <tr class="cex-total-row">
-        <td>합계 ({cex_data['exchange_count']}개)</td>
-        <td>{fmt_usd(cex_totals.get('BTC', 0))}</td>
-        <td>{fmt_usd(cex_totals.get('ETH', 0))}</td>
-        <td>{fmt_usd(cex_totals.get('SOL', 0))}</td>
-        <td>{fmt_usd(grand_total)}</td>
-        <td style="text-align:right; font-size:0.75rem; color:#656d76;">100%</td>
-    </tr>
-    """
+    total_row = (
+        f'<tr class="cex-total-row"><td>합계 ({cex_data["exchange_count"]}개)</td>'
+        f'<td>{fmt_usd(cex_totals.get("BTC", 0))}</td>'
+        f'<td>{fmt_usd(cex_totals.get("ETH", 0))}</td>'
+        f'<td>{fmt_usd(cex_totals.get("SOL", 0))}</td>'
+        f'<td>{fmt_usd(grand_total)}</td>'
+        f'<td style="text-align:right;font-size:0.75rem;color:#656d76;">100%</td></tr>'
+    )
 
-    table_html += "</tbody></table>"
-    st.markdown(table_html, unsafe_allow_html=True)
+    full_table = (
+        '<table class="cex-table"><thead><tr>'
+        '<th>거래소</th><th>BTC 보유량</th><th>ETH 보유량</th>'
+        '<th>SOL 보유량</th><th>총 보유량</th><th style="width:120px;">비중</th>'
+        '</tr></thead><tbody>'
+        + "".join(table_rows)
+        + total_row
+        + '</tbody></table>'
+    )
+    st.markdown(full_table, unsafe_allow_html=True)
 
     # ── 해석 도움말 ──
-    st.markdown("""
-    <div style="background:#f6f8fa; border:1px solid #e1e4e8; border-radius:12px; padding:1rem 1.25rem; margin-top:1rem; font-size:0.8rem; color:#656d76; line-height:1.7;">
-        📖 <b>읽는 법:</b><br>
-        • <b>BTC 보유량</b> = 해당 거래소가 비트코인 체인 위에 보유한 자산의 달러 가치<br>
-        • <b>ETH 보유량</b> = 이더리움 메인넷 위 보유 자산 (ERC-20 토큰 포함)<br>
-        • <b>총 보유량</b> = 모든 체인(BTC, ETH, SOL, TRON, Arbitrum 등)을 합산한 금액<br>
-        • 거래소 보유량 <span style="color:#cf222e;font-weight:600;">증가</span> → 매도 압력 ↑ (코인이 거래소로 유입) &nbsp;|&nbsp;
-          보유량 <span style="color:#1a7f37;font-weight:600;">감소</span> → 축적 신호 ↑ (코인이 거래소에서 인출)
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div style="background:#f6f8fa;border:1px solid #e1e4e8;border-radius:12px;'
+        'padding:1rem 1.25rem;margin-top:1rem;font-size:0.8rem;color:#656d76;line-height:1.7;">'
+        '📖 <b>읽는 법:</b><br>'
+        '• <b>BTC 보유량</b> = 해당 거래소가 비트코인 체인 위에 보유한 자산의 달러 가치<br>'
+        '• <b>ETH 보유량</b> = 이더리움 메인넷 위 보유 자산 (ERC-20 토큰 포함)<br>'
+        '• <b>총 보유량</b> = 모든 체인(BTC, ETH, SOL, TRON, Arbitrum 등)을 합산한 금액<br>'
+        '• 거래소 보유량 <span style="color:#cf222e;font-weight:600;">증가</span>'
+        ' → 매도 압력 ↑ (코인이 거래소로 유입) &nbsp;|&nbsp; '
+        '보유량 <span style="color:#1a7f37;font-weight:600;">감소</span>'
+        ' → 축적 신호 ↑ (코인이 거래소에서 인출)'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 else:
-    st.markdown("""
-    <div class="error-box">
-        ⚠️ 거래소 보유량 데이터를 가져오지 못했습니다. 잠시 후 새로고침해 주세요.
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="error-box">'
+        '⚠️ 거래소 보유량 데이터를 가져오지 못했습니다. 잠시 후 새로고침해 주세요.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 # ═══════ 에러 ═════════════════════════════════════════════════════════════════
 errors = report.get("errors", {})
 if errors:
     err_items = " | ".join([f"{k}: {v}" for k, v in errors.items()])
-    st.markdown(f"""
-    <div class="error-box">
-        ⚠️ 일부 데이터 소스에서 수집 실패: {err_items}
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="error-box">⚠️ 일부 데이터 소스에서 수집 실패: {err_items}</div>',
+        unsafe_allow_html=True,
+    )
 
 # ═══════ Raw JSON ═════════════════════════════════════════════════════════════
 with st.expander("📋 원본 JSON 데이터 보기 (개발자용)"):
