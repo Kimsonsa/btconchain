@@ -467,6 +467,106 @@ def fetch_top_coins():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 롱/숏 비율 (Binance, OKX, Bybit 무료 API)
+# ─────────────────────────────────────────────────────────────────────────────
+def fetch_long_short_ratio():
+    """거래소별 BTC 롱/숏 비율 수집 (API 키 불필요)."""
+    try:
+        exchanges = []
+
+        # ── Binance 글로벌 롱숏 ──
+        try:
+            bn = get_json("https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
+                          "?symbol=BTCUSDT&period=5m&limit=1")
+            if bn and len(bn) > 0:
+                d = bn[0]
+                exchanges.append({
+                    "name": "Binance",
+                    "icon": "🟡",
+                    "long_pct": safe_float(d.get("longAccount", 0)) * 100,
+                    "short_pct": safe_float(d.get("shortAccount", 0)) * 100,
+                    "ratio": safe_float(d.get("longShortRatio", 0)),
+                })
+        except Exception:
+            pass
+
+        # ── Binance 탑 트레이더 포지션 ──
+        try:
+            bn_top = get_json("https://fapi.binance.com/futures/data/topLongShortPositionRatio"
+                              "?symbol=BTCUSDT&period=5m&limit=1")
+            if bn_top and len(bn_top) > 0:
+                d = bn_top[0]
+                exchanges.append({
+                    "name": "Binance (Top)",
+                    "icon": "🟡",
+                    "long_pct": safe_float(d.get("longAccount", 0)) * 100,
+                    "short_pct": safe_float(d.get("shortAccount", 0)) * 100,
+                    "ratio": safe_float(d.get("longShortRatio", 0)),
+                })
+        except Exception:
+            pass
+
+        # ── OKX ──
+        try:
+            okx = get_json("https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio"
+                           "?ccy=BTC&period=5m")
+            if okx and okx.get("code") == "0" and okx.get("data"):
+                r = safe_float(okx["data"][0][1])
+                if r:
+                    long_pct = r / (1 + r) * 100
+                    short_pct = 100 - long_pct
+                    exchanges.append({
+                        "name": "OKX",
+                        "icon": "⚫",
+                        "long_pct": round(long_pct, 2),
+                        "short_pct": round(short_pct, 2),
+                        "ratio": round(r, 4),
+                    })
+        except Exception:
+            pass
+
+        # ── Bybit ──
+        try:
+            bybit = get_json("https://api.bybit.com/v5/market/account-ratio"
+                             "?category=linear&symbol=BTCUSDT&period=5min&limit=1")
+            if bybit and bybit.get("retCode") == 0:
+                lst = bybit.get("result", {}).get("list", [])
+                if lst:
+                    d = lst[0]
+                    long_pct = safe_float(d.get("buyRatio", 0)) * 100
+                    short_pct = safe_float(d.get("sellRatio", 0)) * 100
+                    ratio = long_pct / short_pct if short_pct else 0
+                    exchanges.append({
+                        "name": "Bybit",
+                        "icon": "🟠",
+                        "long_pct": round(long_pct, 2),
+                        "short_pct": round(short_pct, 2),
+                        "ratio": round(ratio, 4),
+                    })
+        except Exception:
+            pass
+
+        if not exchanges:
+            return {}
+
+        # 전체 평균
+        avg_long = sum(e["long_pct"] for e in exchanges) / len(exchanges)
+        avg_short = sum(e["short_pct"] for e in exchanges) / len(exchanges)
+        avg_ratio = avg_long / avg_short if avg_short else 0
+
+        return {
+            "exchanges": exchanges,
+            "avg_long_pct": round(avg_long, 2),
+            "avg_short_pct": round(avg_short, 2),
+            "avg_ratio": round(avg_ratio, 4),
+            "exchange_count": len(exchanges),
+        }
+    except Exception as e:
+        print(f"[WARN] fetch_long_short_ratio 실패: {e}")
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 거래소 보유량 (DeFiLlama 무료 API)
 # ─────────────────────────────────────────────────────────────────────────────
 CEX_SLUGS = [

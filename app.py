@@ -8,6 +8,7 @@ import streamlit as st
 from btc_onchain import (
     collect,
     fetch_cex_reserves,
+    fetch_long_short_ratio,
     fetch_lightning_network,
     fetch_stablecoin_mcap,
     fetch_defi_tvl,
@@ -416,6 +417,10 @@ def cex_delta_html(cur, prev, threshold=50000):
     color = "#cf222e" if diff > 0 else "#1a7f37"  # 증가=빨강(매도압력), 감소=초록(축적)
     return f'<span style="color:{color};font-size:0.68rem;font-weight:600;"> {arrow}{fmt_usd(abs(diff))}</span>'
 
+
+@st.cache_data(ttl=120)
+def load_long_short():
+    return fetch_long_short_ratio()
 
 @st.cache_data(ttl=600)
 def load_lightning():
@@ -1078,7 +1083,66 @@ if tvl_data and tvl_data.get("chains"):
     )
     st.markdown(tvl_table, unsafe_allow_html=True)
 
-# ═══════ [12] BTC 선물 시장 ═══════════════════════════════════════════════════
+# ═══════ [12] 롱/숏 비율 ═════════════════════════════════════════════════════
+st.markdown('<div class="section-header">⚖️ BTC 롱/숏 비율 (Long/Short Ratio) <span style="color:#8b949e;font-size:0.8rem;font-weight:400;">2분 주기 갱신</span></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 <b>롱(Long)</b> = 가격 상승에 베팅한 포지션, <b>숏(Short)</b> = 하락에 베팅한 포지션. '
+    '롱 비율이 높으면 시장이 상승을 기대하고 있다는 뜻이고, '
+    '너무 한쪽으로 쏠리면 <b>반대 방향 급등락(숏스퀴즈/롱스퀴즈)</b>이 올 수 있습니다.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+ls_data = load_long_short()
+if ls_data and ls_data.get("exchanges"):
+    avg_l = ls_data["avg_long_pct"]
+    avg_s = ls_data["avg_short_pct"]
+    avg_r = ls_data["avg_ratio"]
+    signal_color = "#cf222e" if avg_l > 70 else "#1a7f37" if avg_s > 55 else "#656d76"
+    signal_text = "⚠️ 롱 과열 (숏스퀴즈 주의)" if avg_l > 70 else "⚠️ 숏 과열 (롱스퀴즈 주의)" if avg_s > 55 else "균형 상태"
+    st.markdown(
+        f'<div style="background:#f8f9fa;border:1px solid #e1e4e8;border-radius:12px;padding:1rem 1.5rem;margin-bottom:1rem;">'
+        f'<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">'
+        f'<div><span style="font-size:0.85rem;color:#656d76;">거래소 평균</span><br>'
+        f'<span style="font-size:1.3rem;font-weight:700;color:#1a7f37;">롱 {avg_l:.1f}%</span>'
+        f'<span style="color:#8b949e;margin:0 0.5rem;">vs</span>'
+        f'<span style="font-size:1.3rem;font-weight:700;color:#cf222e;">숏 {avg_s:.1f}%</span></div>'
+        f'<div style="text-align:right;"><span style="font-size:0.85rem;color:#656d76;">롱/숏 비율</span><br>'
+        f'<span style="font-size:1.3rem;font-weight:700;">{avg_r:.2f}</span></div>'
+        f'<div style="text-align:right;"><span style="font-size:0.85rem;color:{signal_color};font-weight:600;">{signal_text}</span></div>'
+        f'</div>'
+        f'<div style="margin-top:0.8rem;height:20px;border-radius:10px;overflow:hidden;display:flex;">'
+        f'<div style="width:{avg_l}%;background:linear-gradient(90deg,#22c55e,#4ade80);display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:#fff;font-weight:600;">롱 {avg_l:.1f}%</div>'
+        f'<div style="width:{avg_s}%;background:linear-gradient(90deg,#f87171,#ef4444);display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:#fff;font-weight:600;">숏 {avg_s:.1f}%</div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # 거래소별 테이블
+    ls_rows = []
+    for ex in ls_data["exchanges"]:
+        l_w = ex["long_pct"]
+        s_w = ex["short_pct"]
+        ls_rows.append(
+            f'<tr><td style="font-weight:600;">{ex["icon"]} {ex["name"]}</td>'
+            f'<td style="color:#1a7f37;font-weight:600;">{ex["long_pct"]:.1f}%</td>'
+            f'<td style="color:#cf222e;font-weight:600;">{ex["short_pct"]:.1f}%</td>'
+            f'<td>{ex["ratio"]:.2f}</td>'
+            f'<td><div style="height:14px;border-radius:7px;overflow:hidden;display:flex;">'
+            f'<div style="width:{l_w}%;background:#4ade80;"></div>'
+            f'<div style="width:{s_w}%;background:#f87171;"></div>'
+            f'</div></td></tr>'
+        )
+    ls_table = (
+        '<table class="cex-table"><thead><tr>'
+        '<th style="text-align:left;">거래소</th><th>롱 비율</th><th>숏 비율</th>'
+        '<th>비율</th><th style="width:120px;">분포</th>'
+        '</tr></thead><tbody>'
+        + "".join(ls_rows) + '</tbody></table>'
+    )
+    st.markdown(ls_table, unsafe_allow_html=True)
+
+# ═══════ [13] BTC 선물 시장 ═══════════════════════════════════════════════════
 st.markdown('<div class="section-header">📊 BTC 선물 시장 (Derivatives)</div>', unsafe_allow_html=True)
 st.markdown(
     '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
