@@ -8,6 +8,7 @@ import streamlit as st
 from btc_onchain import (
     collect,
     fetch_cex_reserves,
+    fetch_premium_indicators,
     fetch_long_short_ratio,
     fetch_lightning_network,
     fetch_stablecoin_mcap,
@@ -417,6 +418,10 @@ def cex_delta_html(cur, prev, threshold=50000):
     color = "#cf222e" if diff > 0 else "#1a7f37"  # 증가=빨강(매도압력), 감소=초록(축적)
     return f'<span style="color:{color};font-size:0.68rem;font-weight:600;"> {arrow}{fmt_usd(abs(diff))}</span>'
 
+
+@st.cache_data(ttl=120)
+def load_premiums():
+    return fetch_premium_indicators()
 
 @st.cache_data(ttl=120)
 def load_long_short():
@@ -981,7 +986,48 @@ else:
         unsafe_allow_html=True,
     )
 
-# ═══════ [9] 라이트닝 네트워크 ════════════════════════════════════════════════
+# ═══════ [9] 프리미엄 지표 ═══════════════════════════════════════════════════
+st.markdown('<div class="section-header">🌍 프리미엄 지표 (코인베이스 / 김치) <span style="color:#8b949e;font-size:0.8rem;font-weight:400;">2분 주기 갱신</span></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 <b>코인베이스 프리미엄</b> = 미국 Coinbase 가격이 Binance보다 비쌀 정도. 양수면 미국 기관 매수세, 음수면 매도세. '
+    '<b>김치 프리미엄</b> = 한국 업비트 가격이 글로벌보다 비쌀 정도. '
+    '양수면 한국 투자자 매수 열기가 높음.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+pm_data = load_premiums()
+if pm_data:
+    p1, p2, p3, p4 = st.columns(4)
+    with p1:
+        cb_p = pm_data.get("coinbase_premium_pct", 0)
+        cb_color = "#1a7f37" if cb_p > 0 else "#cf222e" if cb_p < 0 else "#656d76"
+        cb_signal = "🟢 미국 기관 매수세" if cb_p > 0.05 else "🔴 미국 매도 압력" if cb_p < -0.05 else "⚪ 중립"
+        st.markdown(f'<div class="metric-card"><div class="metric-label">코인베이스 프리미엄</div><div class="metric-sublabel">Coinbase(USD) vs Binance(USDT) 가격 차이</div><div class="metric-value-sm" style="color:{cb_color};">{cb_p:+.3f}%</div><div style="color:#656d76;font-size:0.72rem;">${pm_data.get("coinbase_premium_usd",0):+.0f}</div><div class="interp-badge">{cb_signal}</div></div>', unsafe_allow_html=True)
+    with p2:
+        kp = pm_data.get("kimchi_premium_pct", 0)
+        kp_color = "#cf222e" if kp > 3 else "#1a7f37" if kp > 0 else "#656d76"
+        kp_signal = "🟡 과열 주의" if kp > 5 else "🟢 한국 매수세" if kp > 0.5 else "⚪ 중립" if kp > -0.5 else "🔴 역프리미엄"
+        st.markdown(f'<div class="metric-card"><div class="metric-label">김치 프리미엄</div><div class="metric-sublabel">한국 업비트 vs 글로벌 가격 차이</div><div class="metric-value-sm" style="color:{kp_color};">{kp:+.3f}%</div><div style="color:#656d76;font-size:0.72rem;">₩{pm_data.get("upbit_krw_price",0):,.0f} vs ₩{pm_data.get("global_btc_krw",0):,.0f}</div><div class="interp-badge">{kp_signal}</div></div>', unsafe_allow_html=True)
+    with p3:
+        addr = pm_data.get("active_addresses", 0)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">활성 주소 수</div><div class="metric-sublabel">24시간 내 비트코인 거래에 참여한 고유 지갑 수</div><div class="metric-value-sm">{fmt_num(addr)}</div><div class="interp-badge">네트워크 활성도</div></div>', unsafe_allow_html=True)
+    with p4:
+        rate = pm_data.get("usd_krw_rate", 0)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">환율 (USD/KRW)</div><div class="metric-sublabel">USDT/KRW 기준 환산 환율</div><div class="metric-value-sm">₩{rate:,.0f}</div><div class="interp-badge">참고용</div></div>', unsafe_allow_html=True)
+
+    # 프리미엄 해석
+    st.markdown(
+        '<div style="background:#f6f8fa;border:1px solid #e1e4e8;border-radius:12px;padding:0.8rem 1.25rem;margin-top:0.5rem;font-size:0.78rem;color:#656d76;line-height:1.6;">'
+        '📖 <b>프리미엄 해석:</b> '
+        '코인베이스 프리미엄 양수 = 미국 기관 매수 열기 ↑ | '
+        '김치 프리미엄 3%+ = 한국 과열 주의 | '
+        '둘 다 높은 양수 = 강한 매수 심리'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+# ═══════ [10] 라이트닝 네트워크 ════════════════════════════════════════════════
 st.markdown('<div class="section-header">⚡ 라이트닝 네트워크 (Lightning Network)</div>', unsafe_allow_html=True)
 st.markdown(
     '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'

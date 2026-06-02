@@ -467,6 +467,60 @@ def fetch_top_coins():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 프리미엄 지표 (코인베이스 프리미엄 + 김치 프리미엄)
+# ─────────────────────────────────────────────────────────────────────────────
+def fetch_premium_indicators():
+    """코인베이스/김치 프리미엄 + 활성 주소 수 (무료 API)."""
+    out = {}
+    # ── 바이낸스 기준 가격 ──
+    try:
+        bn = get_json("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+        bn_price = float(bn["price"])
+        out["binance_price"] = bn_price
+    except Exception:
+        bn_price = None
+
+    # ── 코인베이스 프리미엄 ──
+    try:
+        cb = get_json("https://api.coinbase.com/v2/prices/BTC-USD/spot")
+        cb_price = float(cb["data"]["amount"])
+        out["coinbase_price"] = cb_price
+        if bn_price:
+            out["coinbase_premium_pct"] = round((cb_price - bn_price) / bn_price * 100, 4)
+            out["coinbase_premium_usd"] = round(cb_price - bn_price, 2)
+    except Exception:
+        pass
+
+    # ── 김치 프리미엄 ──
+    try:
+        upbit = get_json("https://api.upbit.com/v1/ticker?markets=KRW-BTC")
+        krw_price = float(upbit[0]["trade_price"])
+        out["upbit_krw_price"] = krw_price
+
+        # USDT/KRW로 환율 추정
+        usdt_kr = get_json("https://api.upbit.com/v1/ticker?markets=KRW-USDT")
+        usd_krw = float(usdt_kr[0]["trade_price"])
+        out["usd_krw_rate"] = usd_krw
+
+        if bn_price:
+            global_krw = bn_price * usd_krw
+            out["global_btc_krw"] = round(global_krw, 0)
+            out["kimchi_premium_pct"] = round((krw_price - global_krw) / global_krw * 100, 4)
+    except Exception:
+        pass
+
+    # ── 활성 주소 수 ──
+    try:
+        data = get_json("https://api.blockchain.info/charts/n-unique-addresses?timespan=1days&format=json")
+        if data.get("values"):
+            out["active_addresses"] = int(data["values"][-1]["y"])
+    except Exception:
+        pass
+
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 롱/숏 비율 (Binance, OKX, Bybit 무료 API)
 # ─────────────────────────────────────────────────────────────────────────────
 def fetch_long_short_ratio():
