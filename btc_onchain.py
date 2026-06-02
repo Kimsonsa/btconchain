@@ -292,6 +292,81 @@ def fetch_bitcoin_data_advanced():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 거래소 보유량 (DeFiLlama 무료 API)
+# ─────────────────────────────────────────────────────────────────────────────
+CEX_SLUGS = [
+    ("binance-cex", "Binance", "🟡"),
+    ("okx", "OKX", "⚫"),
+    ("bybit", "Bybit", "🟠"),
+    ("bitfinex", "Bitfinex", "🟢"),
+    ("robinhood", "Robinhood", "🟢"),
+    ("crypto-com", "Crypto.com", "🔵"),
+    ("gate-io", "Gate.io", "🔵"),
+    ("htx", "HTX", "🔵"),
+    ("kucoin", "KuCoin", "🟢"),
+    ("deribit", "Deribit", "⚪"),
+]
+
+# 추적할 체인 목록 (체인이름, 표시이름)
+CEX_CHAINS = [
+    ("Bitcoin", "BTC"),
+    ("Ethereum", "ETH"),
+    ("Solana", "SOL"),
+    ("Tron", "TRON"),
+    ("Arbitrum", "ARB"),
+    ("Avalanche", "AVAX"),
+]
+
+
+def fetch_cex_reserves():
+    """
+    DeFiLlama API로 주요 거래소(CEX)의 체인별 보유 자산 규모를 조회.
+    거래소에 쌓인 코인이 늘면 매도 압력, 줄면 인출(축적) 신호.
+    무료 / 키 불필요 / 1시간 주기 업데이트.
+    """
+    results = []
+    totals = {}  # chain_name -> total USD value
+
+    for slug, display_name, icon in CEX_SLUGS:
+        try:
+            data = get_json(
+                f"https://api.llama.fi/protocol/{slug}",
+                timeout=10, retries=1
+            )
+            chains = data.get("currentChainTvls", {})
+            total_usd = sum(
+                v for v in chains.values() if isinstance(v, (int, float))
+            )
+
+            entry = {
+                "slug": slug,
+                "name": display_name,
+                "icon": icon,
+                "total_usd": total_usd,
+                "chains": {},
+            }
+
+            for chain_key, chain_label in CEX_CHAINS:
+                val = chains.get(chain_key, 0)
+                entry["chains"][chain_label] = val
+                totals[chain_label] = totals.get(chain_label, 0) + val
+
+            results.append(entry)
+        except Exception:
+            continue
+
+    # 전체 거래소 합산
+    grand_total = sum(e["total_usd"] for e in results)
+
+    return {
+        "exchanges": results,
+        "totals": totals,
+        "grand_total_usd": grand_total,
+        "exchange_count": len(results),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 해석 / 신호 (참고용 — 투자 자문 아님)
 # ─────────────────────────────────────────────────────────────────────────────
 def interpret_mvrv(v):
