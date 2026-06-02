@@ -1,0 +1,647 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+btc_onchain.py
+==============
+비트코인 온체인 데이터 "총정리" 수집 스크립트.
+
+특징
+----
+- 무료 API만 사용 (대부분 API 키 불필요)
+- 외부 라이브러리 없음 (파이썬 표준 라이브러리만 사용 → pip install 불필요)
+- 가격 / 네트워크 / 멤풀 / 온체인 활동 / 밸류에이션(MVRV·NUPL 등) / 시장심리 / SOPR 까지
+- cron, Windows 작업 스케줄러 등으로 자동화하기 쉬운 구조
+- JSON 저장 + CSV 시계열 로그 누적 기능 내장
+
+데이터 출처
+-----------
+1. CoinGecko            : 가격, 시총, 거래량, ATH, 도미넌스          (키 불필요)
+2. mempool.space        : 해시레이트, 난이도, 다음 난이도 조정, 멤풀, 수수료 (키 불필요)
+3. alternative.me       : 공포·탐욕 지수                              (키 불필요)
+4. Coin Metrics(community): 시총/실현시총/공급량/활성주소/TX수        (키 불필요)
+                          → MVRV, NUPL, 실현가격, NVT 직접 계산
+5. blockchain.info      : 24h TX수, 거래량(USD), 채굴자 수익, 누적 채굴량 (키 불필요)
+6. bitcoin-data.com     : SOPR, Puell Multiple, MVRV Z-Score (선택, 실패 시 자동 스킵)
+
+사용법
+------
+  python btc_onchain.py            # 전체 리포트를 콘솔에 출력
+  python btc_onchain.py --json     # 결과를 JSON으로 stdout 출력 (파이프/다른 프로그램 연동용)
+  python btc_onchain.py --save     # ./btc_data/ 에 타임스탬프 JSON 저장 + CSV 로그 1행 누적
+  python btc_onchain.py --quiet    # 종합 신호 한 줄만 출력
+  python btc_onchain.py --no-color # ANSI 색상 끄기
+
+자동화 예시 (매일 09:05 KST)
+  - Linux  crontab:  5 0 * * *  /usr/bin/python3 /path/btc_onchain.py --save  (UTC 00:05 = KST 09:05)
+  - Windows: 작업 스케줄러에서 "python C:\\path\\btc_onchain.py --save" 등록
+
+주의: 본 스크립트의 '신호/해석'은 통계적 참고용이며 투자 자문이 아닙니다.
+"""
+
+import argparse
+import csv
+import json
+import os
+import ssl
+import sys
+from datetime import datetime, timezone, timedelta
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 설정
+# ─────────────────────────────────────────────────────────────────────────────
+TIMEOUT = 15                     # 각 요청 타임아웃(초)
+RETRIES = 2                      # 실패 시 재시도 횟수
+USER_AGENT = "btc-onchain-collector/1.0"
+ENABLE_BITCOIN_DATA = True       # SOPR/Puell 등 선택 모듈 사용 여부
+OUTPUT_DIR = "btc_data"          # --save 시 저장 폴더
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HTTP 헬퍼 (표준 라이브러리)
+# ─────────────────────────────────────────────────────────────────────────────
+def get_json(url, headers=None, timeout=TIMEOUT, retries=RETRIES):
+    """URL에서 JSON을 받아 dict/list로 반환. 실패 시 예외를 올림."""
+    hdrs = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if headers:
+        hdrs.update(headers)
+    ctx = ssl.create_default_context()
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            req = Request(url, headers=hdrs)
+            with urlopen(req, timeout=timeout, context=ctx) as resp:
+                raw = resp.read()
+            return json.loads(raw.decode("utf-8"))
+        except (URLError, HTTPError, TimeoutError, ValueError) as e:
+            last_err = e
+    raise last_err
+
+
+def safe_float(v):
+    """문자열/None 등을 안전하게 float로. 실패 시 None."""
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 데이터 소스별 수집 함수 (각각 실패해도 부분 결과 + 에러를 남기고 진행)
+# ─────────────────────────────────────────────────────────────────────────────
+def fetch_coingecko():
+    """가격 / 시총 / 거래량 / ATH / 도미넌스."""
+    out = {}
+    url = ("https://api.coingecko.com/api/v3/coins/markets"
+           "?vs_currency=usd&ids=bitcoin"
+           "&price_change_percentage=24h,7d,30d")
+    data = get_json(url)
+    if isinstance(data, list) and data:
+        d = data[0]
+        out["price_usd"] = safe_float(d.get("current_price"))
+        out["market_cap_usd"] = safe_float(d.get("market_cap"))
+        out["volume_24h_usd"] = safe_float(d.get("total_volume"))
+        out["high_24h"] = safe_float(d.get("high_24h"))
+        out["low_24h"] = safe_float(d.get("low_24h"))
+        out["ath_usd"] = safe_float(d.get("ath"))
+        out["ath_change_pct"] = safe_float(d.get("ath_change_percentage"))
+        out["circulating_supply"] = safe_float(d.get("circulating_supply"))
+        out["max_supply"] = safe_float(d.get("max_supply"))
+        out["change_24h_pct"] = safe_float(d.get("price_change_percentage_24h"))
+        out["change_7d_pct"] = safe_float(d.get("price_change_percentage_7d_in_currency"))
+        out["change_30d_pct"] = safe_float(d.get("price_change_percentage_30d_in_currency"))
+    # 도미넌스
+    try:
+        g = get_json("https://api.coingecko.com/api/v3/global")
+        out["btc_dominance_pct"] = safe_float(
+            g.get("data", {}).get("market_cap_percentage", {}).get("btc"))
+    except Exception:
+        pass
+    return out
+
+
+def fetch_mempool_space():
+    """네트워크 / 채굴 / 멤풀 / 수수료."""
+    out = {}
+    # 추천 수수료 (sat/vB)
+    fees = get_json("https://mempool.space/api/v1/fees/recommended")
+    out["fee_fastest"] = fees.get("fastestFee")
+    out["fee_half_hour"] = fees.get("halfHourFee")
+    out["fee_hour"] = fees.get("hourFee")
+    out["fee_economy"] = fees.get("economyFee")
+    out["fee_minimum"] = fees.get("minimumFee")
+
+    # 해시레이트 / 난이도
+    try:
+        hr = get_json("https://mempool.space/api/v1/mining/hashrate/3d")
+        chr_ = safe_float(hr.get("currentHashrate"))
+        out["hashrate_ehs"] = chr_ / 1e18 if chr_ else None     # EH/s
+        out["difficulty"] = safe_float(hr.get("currentDifficulty"))
+    except Exception:
+        pass
+
+    # 다음 난이도 조정
+    try:
+        da = get_json("https://mempool.space/api/v1/difficulty-adjustment")
+        out["diff_progress_pct"] = safe_float(da.get("progressPercent"))
+        out["diff_change_pct"] = safe_float(da.get("difficultyChange"))
+        out["diff_remaining_blocks"] = da.get("remainingBlocks")
+        rt = safe_float(da.get("remainingTime"))
+        out["diff_remaining_days"] = round(rt / 86400000, 1) if rt else None
+        ert = da.get("estimatedRetargetDate")
+        if ert:
+            out["diff_retarget_date"] = datetime.fromtimestamp(
+                ert / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        pass
+
+    # 멤풀 상태
+    try:
+        mp = get_json("https://mempool.space/api/mempool")
+        out["mempool_tx_count"] = mp.get("count")
+        out["mempool_vsize"] = mp.get("vsize")
+        tf = safe_float(mp.get("total_fee"))
+        out["mempool_total_fee_btc"] = tf / 1e8 if tf else None
+    except Exception:
+        pass
+
+    # 블록 높이
+    try:
+        out["block_height"] = get_json("https://mempool.space/api/blocks/tip/height")
+    except Exception:
+        pass
+
+    # 가격(폴백용)
+    try:
+        pr = get_json("https://mempool.space/api/v1/prices")
+        out["price_usd_mempool"] = safe_float(pr.get("USD"))
+    except Exception:
+        pass
+    return out
+
+
+def fetch_fear_greed():
+    """공포·탐욕 지수 (오늘 + 어제)."""
+    out = {}
+    data = get_json("https://api.alternative.me/fng/?limit=2")
+    arr = data.get("data", [])
+    if arr:
+        out["value"] = int(arr[0].get("value"))
+        out["classification"] = arr[0].get("value_classification")
+    if len(arr) > 1:
+        out["value_yesterday"] = int(arr[1].get("value"))
+    return out
+
+
+def fetch_coinmetrics():
+    """
+    Coin Metrics 커뮤니티 API (키 불필요).
+    시총/실현시총/공급량/활성주소/TX수/전송가치 → MVRV·NUPL·실현가격·NVT 계산.
+    """
+    out = {}
+    metrics = ["PriceUSD", "CapMrktCurUSD", "CapRealUSD", "SplyCur",
+               "AdrActCnt", "TxCnt", "TxTfrValAdjUSD"]
+    start = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%d")
+    url = ("https://community-api.coinmetrics.io/v4/timeseries/asset-metrics"
+           "?assets=btc&metrics=" + ",".join(metrics) +
+           "&frequency=1d&page_size=100&start_time=" + start)
+    data = get_json(url)
+    rows = data.get("data", [])
+    if not rows:
+        return out
+    # 필요한 핵심 값이 채워진 가장 최근 행 선택 (커뮤니티 데이터는 1~2일 지연될 수 있음)
+    row = None
+    for r in reversed(rows):
+        if r.get("CapMrktCurUSD") and r.get("CapRealUSD") and r.get("SplyCur"):
+            row = r
+            break
+    if row is None:
+        row = rows[-1]
+
+    out["cm_date"] = (row.get("time") or "")[:10]
+    mcap = safe_float(row.get("CapMrktCurUSD"))
+    rcap = safe_float(row.get("CapRealUSD"))
+    sply = safe_float(row.get("SplyCur"))
+    tfr = safe_float(row.get("TxTfrValAdjUSD"))
+
+    out["market_cap_usd"] = mcap
+    out["realized_cap_usd"] = rcap
+    out["supply"] = sply
+    out["active_addresses"] = safe_float(row.get("AdrActCnt"))
+    out["tx_count"] = safe_float(row.get("TxCnt"))
+    out["price_usd_cm"] = safe_float(row.get("PriceUSD"))
+
+    # ── 파생 밸류에이션 지표 직접 계산 ──
+    if mcap and rcap:
+        out["mvrv"] = mcap / rcap                       # 시총 / 실현시총
+        out["nupl"] = (mcap - rcap) / mcap              # 순미실현손익
+    if rcap and sply:
+        out["realized_price_usd"] = rcap / sply         # 실현가격(평균 취득단가 근사)
+    if mcap and tfr:
+        out["nvt"] = mcap / tfr                         # Network Value to Transactions
+    return out
+
+
+def fetch_blockchain_stats():
+    """blockchain.info /stats : 24h TX수, USD 거래량, 채굴자 수익, 누적 채굴량."""
+    out = {}
+    data = get_json("https://api.blockchain.info/stats?format=json")
+    out["n_tx_24h"] = data.get("n_tx")
+    out["tx_volume_usd_est"] = safe_float(data.get("estimated_transaction_volume_usd"))
+    out["miners_revenue_usd"] = safe_float(data.get("miners_revenue_usd"))
+    totalbc = safe_float(data.get("totalbc"))
+    out["total_btc_mined"] = totalbc / 1e8 if totalbc else None
+    out["minutes_between_blocks"] = safe_float(data.get("minutes_between_blocks"))
+    return out
+
+
+def fetch_bitcoin_data_advanced():
+    """
+    bitcoin-data.com 무료 엔드포인트 (선택).
+    SOPR / Puell Multiple / MVRV Z-Score 등 UTXO 기반 지표.
+    포맷이 바뀌거나 막히면 조용히 스킵된다.
+    """
+    out = {}
+    slugs = {
+        "sopr": "sopr",
+        "puell_multiple": "puell-multiple",
+        "mvrv_zscore": "mvrv-zscore",
+        "reserve_risk": "reserve-risk",
+    }
+    for key, slug in slugs.items():
+        try:
+            data = get_json("https://bitcoin-data.com/v1/%s/last" % slug, retries=0)
+            # 응답은 list[dict] 또는 dict 형태일 수 있어 방어적으로 숫자 필드 추출
+            rec = data[0] if isinstance(data, list) and data else data
+            if isinstance(rec, dict):
+                val = None
+                for k, v in rec.items():
+                    if k.lower() in ("d", "date", "unixts", "theday", "time"):
+                        continue
+                    fv = safe_float(v)
+                    if fv is not None:
+                        val = fv
+                        break
+                if val is not None:
+                    out[key] = val
+        except Exception:
+            continue
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 해석 / 신호 (참고용 — 투자 자문 아님)
+# ─────────────────────────────────────────────────────────────────────────────
+def interpret_mvrv(v):
+    if v is None:
+        return None
+    if v < 1:
+        return "극도 저평가 (역사적 바닥권, 실현가 하회)"
+    if v < 1.5:
+        return "저평가 구간"
+    if v < 2.5:
+        return "중립"
+    if v < 3.7:
+        return "과열 진입"
+    return "역사적 고점권 (과매수)"
+
+
+def interpret_nupl(v):
+    if v is None:
+        return None
+    if v < 0:
+        return "Capitulation (항복 — 시장 전반 손실)"
+    if v < 0.25:
+        return "Hope / Fear"
+    if v < 0.5:
+        return "Optimism / Anxiety"
+    if v < 0.75:
+        return "Belief / Denial"
+    return "Euphoria / Greed (도취 — 고점 경계)"
+
+
+def interpret_puell(v):
+    if v is None:
+        return None
+    if v < 0.5:
+        return "채굴자 항복 (역사적 매수 구간)"
+    if v > 4:
+        return "채굴자 고수익 (역사적 고점 경계)"
+    return "중립"
+
+
+def composite_signal(d):
+    """MVRV·NUPL·공포탐욕·Puell을 0~100 점수로 묶어 대략적 시장 온도 표시."""
+    score, n = 0.0, 0
+    mvrv = d.get("valuation", {}).get("mvrv")
+    nupl = d.get("valuation", {}).get("nupl")
+    fg = d.get("sentiment", {}).get("value")
+    puell = d.get("advanced", {}).get("puell_multiple")
+
+    if mvrv is not None:
+        score += max(0, min(100, (mvrv - 0.7) / (4.0 - 0.7) * 100)); n += 1
+    if nupl is not None:
+        score += max(0, min(100, (nupl + 0.1) / (0.75 + 0.1) * 100)); n += 1
+    if fg is not None:
+        score += fg; n += 1
+    if puell is not None:
+        score += max(0, min(100, (puell - 0.3) / (4.0 - 0.3) * 100)); n += 1
+
+    if n == 0:
+        return None, None
+    s = round(score / n, 1)
+    if s < 25:
+        label = "❄️  과매도 / 저평가 영역"
+    elif s < 45:
+        label = "🟢 중립~저평가"
+    elif s < 60:
+        label = "🟡 중립"
+    elif s < 75:
+        label = "🟠 과열 진입"
+    else:
+        label = "🔥 과열 / 고점 경계"
+    return s, label
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 수집 오케스트레이션
+# ─────────────────────────────────────────────────────────────────────────────
+def collect():
+    report = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "timestamp_kst": (datetime.now(timezone.utc) + timedelta(hours=9))
+                         .strftime("%Y-%m-%d %H:%M:%S KST"),
+        "errors": {},
+    }
+
+    jobs = [
+        ("price_market", fetch_coingecko),
+        ("network", fetch_mempool_space),
+        ("sentiment", fetch_fear_greed),
+        ("valuation", fetch_coinmetrics),
+        ("activity", fetch_blockchain_stats),
+    ]
+    if ENABLE_BITCOIN_DATA:
+        jobs.append(("advanced", fetch_bitcoin_data_advanced))
+
+    for key, fn in jobs:
+        try:
+            report[key] = fn()
+        except Exception as e:
+            report[key] = {}
+            report["errors"][key] = "%s: %s" % (type(e).__name__, e)
+
+    # 가격 폴백: CoinGecko 실패 시 mempool / Coin Metrics 가격 사용
+    pm = report.get("price_market", {})
+    if not pm.get("price_usd"):
+        pm["price_usd"] = (report.get("network", {}).get("price_usd_mempool")
+                           or report.get("valuation", {}).get("price_usd_cm"))
+        report["price_market"] = pm
+
+    s, label = composite_signal(report)
+    report["composite"] = {"score_0_100": s, "label": label}
+    return report
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 콘솔 렌더링
+# ─────────────────────────────────────────────────────────────────────────────
+class C:
+    def __init__(self, on):
+        self.on = on
+    def _w(self, code, s):
+        return ("\033[%sm%s\033[0m" % (code, s)) if self.on else s
+    def b(self, s):   return self._w("1", s)
+    def dim(self, s): return self._w("2", s)
+    def cy(self, s):  return self._w("36", s)
+    def gr(self, s):  return self._w("32", s)
+    def ye(self, s):  return self._w("33", s)
+    def rd(self, s):  return self._w("31", s)
+
+
+def fmt_usd(v, dp=0):
+    if v is None:
+        return "-"
+    if abs(v) >= 1e12:
+        return "$%.2fT" % (v / 1e12)
+    if abs(v) >= 1e9:
+        return "$%.2fB" % (v / 1e9)
+    if abs(v) >= 1e6:
+        return "$%.2fM" % (v / 1e6)
+    return "$%s" % format(round(v, dp), ",.0f" if dp == 0 else ",.%df" % dp)
+
+
+def fmt_num(v, dp=0):
+    if v is None:
+        return "-"
+    return format(round(v, dp), ",.0f" if dp == 0 else ",.%df" % dp)
+
+
+def fmt_pct(v):
+    if v is None:
+        return "-"
+    return "%+.2f%%" % v
+
+
+def render(report, color=True, quiet=False):
+    c = C(color)
+    out = []
+    comp = report.get("composite", {})
+
+    if quiet:
+        return "[%s] 종합 신호: %s (%s/100)  |  BTC %s" % (
+            report["timestamp_kst"],
+            comp.get("label", "-"),
+            comp.get("score_0_100", "-"),
+            fmt_usd(report.get("price_market", {}).get("price_usd")),
+        )
+
+    line = "═" * 64
+    out.append(c.cy(line))
+    out.append(c.b("  ₿  비트코인 온체인 데이터 총정리"))
+    out.append(c.dim("  " + report["timestamp_kst"]))
+    out.append(c.cy(line))
+
+    # [1] 가격 & 시장
+    pm = report.get("price_market", {})
+    out.append(c.b("\n[1] 가격 & 시장"))
+    out.append("  현재가          %s   (24h %s / 7d %s / 30d %s)" % (
+        fmt_usd(pm.get("price_usd")), fmt_pct(pm.get("change_24h_pct")),
+        fmt_pct(pm.get("change_7d_pct")), fmt_pct(pm.get("change_30d_pct"))))
+    out.append("  시가총액        %s" % fmt_usd(pm.get("market_cap_usd")))
+    out.append("  24h 거래량      %s" % fmt_usd(pm.get("volume_24h_usd")))
+    out.append("  24h 고가/저가   %s / %s" % (fmt_usd(pm.get("high_24h")), fmt_usd(pm.get("low_24h"))))
+    out.append("  ATH            %s  (ATH 대비 %s)" % (
+        fmt_usd(pm.get("ath_usd")), fmt_pct(pm.get("ath_change_pct"))))
+    out.append("  BTC 도미넌스    %s" % (
+        "%.1f%%" % pm["btc_dominance_pct"] if pm.get("btc_dominance_pct") else "-"))
+    out.append("  유통량          %s BTC" % fmt_num(pm.get("circulating_supply")))
+
+    # [2] 네트워크 & 채굴
+    nw = report.get("network", {})
+    out.append(c.b("\n[2] 네트워크 & 채굴"))
+    out.append("  블록 높이       %s" % fmt_num(nw.get("block_height")))
+    out.append("  해시레이트      %s EH/s" % (
+        "%.1f" % nw["hashrate_ehs"] if nw.get("hashrate_ehs") else "-"))
+    out.append("  난이도          %s" % fmt_usd(nw.get("difficulty")).replace("$", ""))
+    out.append("  다음 난이도조정 진행률 %s%%, 예상변화 %s, 잔여 %s블록(~%s일), %s" % (
+        "%.1f" % nw["diff_progress_pct"] if nw.get("diff_progress_pct") is not None else "-",
+        fmt_pct(nw.get("diff_change_pct")),
+        nw.get("diff_remaining_blocks", "-"),
+        nw.get("diff_remaining_days", "-"),
+        nw.get("diff_retarget_date", "-")))
+
+    # [3] 멤풀 & 수수료
+    out.append(c.b("\n[3] 멤풀 & 수수료 (sat/vB)"))
+    out.append("  빠름/30분/1시간/저속  %s / %s / %s / %s" % (
+        nw.get("fee_fastest", "-"), nw.get("fee_half_hour", "-"),
+        nw.get("fee_hour", "-"), nw.get("fee_economy", "-")))
+    out.append("  멤풀 대기 TX    %s 건  (총 수수료 %.3f BTC)" % (
+        fmt_num(nw.get("mempool_tx_count")),
+        nw.get("mempool_total_fee_btc") or 0))
+
+    # [4] 온체인 활동
+    ac = report.get("activity", {})
+    va = report.get("valuation", {})
+    out.append(c.b("\n[4] 온체인 활동"))
+    out.append("  활성 주소(1d)   %s" % fmt_num(va.get("active_addresses")))
+    out.append("  TX 수(1d)       %s" % fmt_num(va.get("tx_count") or ac.get("n_tx_24h")))
+    out.append("  추정 거래량(USD) %s" % fmt_usd(ac.get("tx_volume_usd_est")))
+    out.append("  채굴자 수익(24h) %s" % fmt_usd(ac.get("miners_revenue_usd")))
+    out.append("  누적 채굴량      %s BTC" % fmt_num(ac.get("total_btc_mined")))
+
+    # [5] 밸류에이션 (고급 지표 — 무료 계산)
+    out.append(c.b("\n[5] 밸류에이션 지표  ") + c.dim("(Coin Metrics 기반 계산, 기준일 %s)" % va.get("cm_date", "-")))
+    mvrv = va.get("mvrv")
+    nupl = va.get("nupl")
+    out.append("  MVRV            %s   %s" % (
+        "%.2f" % mvrv if mvrv else "-", c.dim(interpret_mvrv(mvrv) or "")))
+    out.append("  NUPL            %s   %s" % (
+        "%.3f" % nupl if nupl is not None else "-", c.dim(interpret_nupl(nupl) or "")))
+    out.append("  실현가격         %s" % fmt_usd(va.get("realized_price_usd")))
+    out.append("  실현 시총        %s" % fmt_usd(va.get("realized_cap_usd")))
+    out.append("  NVT             %s" % ("%.1f" % va["nvt"] if va.get("nvt") else "-"))
+
+    # [6] 시장 심리
+    se = report.get("sentiment", {})
+    out.append(c.b("\n[6] 시장 심리"))
+    out.append("  공포·탐욕 지수   %s (%s)   어제: %s" % (
+        se.get("value", "-"), se.get("classification", "-"),
+        se.get("value_yesterday", "-")))
+
+    # [7] 고급 지표 (선택)
+    ad = report.get("advanced", {})
+    if ad:
+        out.append(c.b("\n[7] 고급 지표  ") + c.dim("(bitcoin-data.com)"))
+        if ad.get("sopr") is not None:
+            out.append("  SOPR            %.3f   %s" % (
+                ad["sopr"], c.dim("1 미만=손실 실현 / 1 초과=이익 실현")))
+        if ad.get("puell_multiple") is not None:
+            out.append("  Puell Multiple  %.3f   %s" % (
+                ad["puell_multiple"], c.dim(interpret_puell(ad["puell_multiple"]) or "")))
+        if ad.get("mvrv_zscore") is not None:
+            out.append("  MVRV Z-Score    %.2f" % ad["mvrv_zscore"])
+        if ad.get("reserve_risk") is not None:
+            out.append("  Reserve Risk    %.6f" % ad["reserve_risk"])
+
+    # [8] 종합 신호
+    out.append(c.b("\n[8] 종합 신호"))
+    score = comp.get("score_0_100")
+    label = comp.get("label", "-")
+    bar = ""
+    if score is not None:
+        filled = int(round(score / 5))
+        bar = "[" + "█" * filled + "·" * (20 - filled) + "]"
+    out.append("  시장 온도        %s  %s/100  %s" % (bar, score if score is not None else "-", label))
+    out.append(c.dim("  ※ 통계적 참고용이며 투자 자문이 아닙니다."))
+
+    # 에러
+    if report.get("errors"):
+        out.append(c.ye("\n[!] 일부 소스 수집 실패:"))
+        for k, v in report["errors"].items():
+            out.append(c.ye("  - %s: %s" % (k, v)))
+
+    out.append(c.cy(line))
+    return "\n".join(out)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 저장 (JSON 스냅샷 + CSV 시계열 로그)
+# ─────────────────────────────────────────────────────────────────────────────
+CSV_FIELDS = [
+    "timestamp_utc", "price_usd", "market_cap_usd", "realized_price_usd",
+    "mvrv", "nupl", "nvt", "fear_greed", "hashrate_ehs", "fee_fastest",
+    "active_addresses", "sopr", "puell_multiple", "composite_score",
+]
+
+
+def save_outputs(report, out_dir=OUTPUT_DIR):
+    os.makedirs(out_dir, exist_ok=True)
+    # 1) JSON 스냅샷
+    ts = report["timestamp_utc"].replace(":", "").replace("-", "")
+    json_path = os.path.join(out_dir, "btc_%s.json" % ts)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    # 2) CSV 시계열 누적 (한 줄/실행)
+    csv_path = os.path.join(out_dir, "btc_timeseries.csv")
+    pm = report.get("price_market", {})
+    nw = report.get("network", {})
+    va = report.get("valuation", {})
+    se = report.get("sentiment", {})
+    ad = report.get("advanced", {})
+    row = {
+        "timestamp_utc": report["timestamp_utc"],
+        "price_usd": pm.get("price_usd"),
+        "market_cap_usd": pm.get("market_cap_usd") or va.get("market_cap_usd"),
+        "realized_price_usd": va.get("realized_price_usd"),
+        "mvrv": va.get("mvrv"),
+        "nupl": va.get("nupl"),
+        "nvt": va.get("nvt"),
+        "fear_greed": se.get("value"),
+        "hashrate_ehs": nw.get("hashrate_ehs"),
+        "fee_fastest": nw.get("fee_fastest"),
+        "active_addresses": va.get("active_addresses"),
+        "sopr": ad.get("sopr"),
+        "puell_multiple": ad.get("puell_multiple"),
+        "composite_score": report.get("composite", {}).get("score_0_100"),
+    }
+    write_header = not os.path.exists(csv_path)
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        if write_header:
+            w.writeheader()
+        w.writerow(row)
+    return json_path, csv_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# main
+# ─────────────────────────────────────────────────────────────────────────────
+def main():
+    p = argparse.ArgumentParser(description="비트코인 온체인 데이터 총정리 (무료 API)")
+    p.add_argument("--json", action="store_true", help="결과를 JSON으로 출력")
+    p.add_argument("--save", action="store_true", help="JSON 저장 + CSV 시계열 누적")
+    p.add_argument("--quiet", action="store_true", help="종합 신호 한 줄만 출력")
+    p.add_argument("--no-color", action="store_true", help="ANSI 색상 끄기")
+    p.add_argument("--save-dir", default=OUTPUT_DIR, help="저장 폴더 (기본: %s)" % OUTPUT_DIR)
+    args = p.parse_args()
+
+    report = collect()
+
+    if args.save:
+        jp, cp = save_outputs(report, args.save_dir)
+        if not args.json and not args.quiet:
+            print("저장됨: %s\n시계열: %s\n" % (jp, cp))
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        color = sys.stdout.isatty() and not args.no_color
+        print(render(report, color=color, quiet=args.quiet))
+
+
+if __name__ == "__main__":
+    main()
