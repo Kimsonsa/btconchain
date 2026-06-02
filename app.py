@@ -393,9 +393,22 @@ def load_data():
     return collect()
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)
 def load_cex_reserves():
-    return fetch_cex_reserves()
+    import time
+    return fetch_cex_reserves(), time.time()
+
+
+def cex_delta_html(cur, prev, threshold=50000):
+    """증감 화살표 HTML 생성. threshold 이하의 변화는 무시."""
+    if prev is None or cur is None:
+        return ""
+    diff = cur - prev
+    if abs(diff) < threshold:
+        return ""
+    arrow = "▲" if diff > 0 else "▼"
+    color = "#cf222e" if diff > 0 else "#1a7f37"  # 증가=빨강(매도압력), 감소=초록(축적)
+    return f'<span style="color:{color};font-size:0.68rem;font-weight:600;"> {arrow}{fmt_usd(abs(diff))}</span>'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -776,80 +789,75 @@ if ad:
                 """, unsafe_allow_html=True)
 
 # ═══════ [8] 거래소 보유량 (CEX Reserves) ═════════════════════════════════════
-st.markdown('<div class="section-header">🏦 거래소 보유량 (CEX Reserves) <span style="color:#8b949e;font-size:0.8rem;font-weight:400;">DeFiLlama · 1시간 주기 업데이트</span></div>', unsafe_allow_html=True)
-st.markdown("""
-<div style="color:#656d76; font-size:0.82rem; margin-bottom:1rem; line-height:1.6;">
-    💡 거래소에 보관된 암호화폐의 달러 환산 총액입니다.
-    거래소 보유량이 <b>증가</b>하면 매도 대기 물량이 늘어나는 것이고,
-    <b>감소</b>하면 투자자들이 코인을 인출(개인 지갑 보관 = 장기 보유 의향)하고 있다는 신호입니다.
-</div>
-""", unsafe_allow_html=True)
+st.markdown('<div class="section-header">🏦 거래소 보유량 (CEX Reserves) <span style="color:#8b949e;font-size:0.8rem;font-weight:400;">DeFiLlama · 10분 주기 자동 갱신</span></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 거래소에 보관된 암호화폐의 달러 환산 총액입니다. '
+    '거래소 보유량이 <b style="color:#cf222e;">▲ 증가</b>하면 매도 대기 물량이 늘어나는 것이고, '
+    '<b style="color:#1a7f37;">▼ 감소</b>하면 투자자들이 코인을 인출(장기 보유 의향)하고 있다는 신호입니다.'
+    '</div>',
+    unsafe_allow_html=True,
+)
 
 with st.spinner("🏦 거래소 보유량 수집 중... (10개 거래소 조회)"):
-    cex_data = load_cex_reserves()
+    cex_data, cex_fetch_time = load_cex_reserves()
+
+# ── 이전 데이터와 비교하여 증감 계산 ──
+prev_cex = None
+if "cex_fetch_time" not in st.session_state:
+    st.session_state.cex_fetch_time = cex_fetch_time
+    st.session_state.cex_prev_data = None
+elif cex_fetch_time != st.session_state.cex_fetch_time:
+    # 캐시가 갱신됨 → 이전 데이터 저장
+    st.session_state.cex_prev_data = st.session_state.get("cex_current_data")
+    st.session_state.cex_fetch_time = cex_fetch_time
+
+st.session_state.cex_current_data = cex_data
+prev_cex = st.session_state.get("cex_prev_data")
+
+# 이전 거래소 맵 생성
+prev_ex_map = {}
+prev_totals = {}
+prev_grand = None
+if prev_cex and prev_cex.get("exchanges"):
+    prev_ex_map = {e["slug"]: e for e in prev_cex["exchanges"]}
+    prev_totals = prev_cex.get("totals", {})
+    prev_grand = prev_cex.get("grand_total_usd")
 
 if cex_data and cex_data.get("exchanges"):
     cex_exchanges = cex_data["exchanges"]
     cex_totals = cex_data["totals"]
     grand_total = cex_data["grand_total_usd"]
 
-    # 체인별 아이콘
-    chain_icons = {"BTC": "₿", "ETH": "⟠", "SOL": "◎", "TRON": "⬟", "ARB": "🔵", "AVAX": "🔺"}
-
     # ── 요약 카드 ──
+    gt_delta = cex_delta_html(grand_total, prev_grand, threshold=100000)
+    btc_total = cex_totals.get("BTC", 0)
+    btc_pct = (btc_total / grand_total * 100) if grand_total else 0
+    btc_delta = cex_delta_html(btc_total, prev_totals.get("BTC"), threshold=100000)
+    eth_total = cex_totals.get("ETH", 0)
+    eth_pct = (eth_total / grand_total * 100) if grand_total else 0
+    eth_delta = cex_delta_html(eth_total, prev_totals.get("ETH"), threshold=100000)
+    sol_total = cex_totals.get("SOL", 0)
+    sol_pct = (sol_total / grand_total * 100) if grand_total else 0
+    sol_delta = cex_delta_html(sol_total, prev_totals.get("SOL"), threshold=50000)
+
+    has_delta = bool(prev_grand is not None)
+    delta_hint = '<div style="color:#8b949e;font-size:0.65rem;margin-top:0.2rem;">이전 대비 변화</div>' if has_delta and gt_delta else ''
+
     sc1, sc2, sc3, sc4 = st.columns(4)
     with sc1:
-        st.markdown(f"""
-        <div class="cex-summary-card">
-            <div class="cex-chain-icon">🏦</div>
-            <div class="cex-chain-name">전체 거래소 합산</div>
-            <div class="cex-chain-value">{fmt_usd(grand_total)}</div>
-            <div style="color:#8b949e; font-size:0.72rem; margin-top:0.3rem;">{cex_data['exchange_count']}개 거래소 추적 중</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="cex-summary-card"><div class="cex-chain-icon">🏦</div><div class="cex-chain-name">전체 거래소 합산</div><div class="cex-chain-value">{fmt_usd(grand_total)}</div><div style="margin-top:0.2rem;">{gt_delta}</div><div style="color:#8b949e;font-size:0.72rem;margin-top:0.2rem;">{cex_data["exchange_count"]}개 거래소 · 10분 갱신</div></div>', unsafe_allow_html=True)
     with sc2:
-        btc_total = cex_totals.get("BTC", 0)
-        btc_pct = (btc_total / grand_total * 100) if grand_total else 0
-        st.markdown(f"""
-        <div class="cex-summary-card">
-            <div class="cex-chain-icon">₿</div>
-            <div class="cex-chain-name">BTC 보유량</div>
-            <div class="cex-chain-value">{fmt_usd(btc_total)}</div>
-            <div style="color:#8b949e; font-size:0.72rem; margin-top:0.3rem;">전체의 {btc_pct:.1f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="cex-summary-card"><div class="cex-chain-icon">₿</div><div class="cex-chain-name">BTC 보유량</div><div class="cex-chain-value">{fmt_usd(btc_total)}</div><div style="margin-top:0.2rem;">{btc_delta}</div><div style="color:#8b949e;font-size:0.72rem;margin-top:0.2rem;">전체의 {btc_pct:.1f}%</div></div>', unsafe_allow_html=True)
     with sc3:
-        eth_total = cex_totals.get("ETH", 0)
-        eth_pct = (eth_total / grand_total * 100) if grand_total else 0
-        st.markdown(f"""
-        <div class="cex-summary-card">
-            <div class="cex-chain-icon">⟠</div>
-            <div class="cex-chain-name">ETH 보유량</div>
-            <div class="cex-chain-value">{fmt_usd(eth_total)}</div>
-            <div style="color:#8b949e; font-size:0.72rem; margin-top:0.3rem;">전체의 {eth_pct:.1f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="cex-summary-card"><div class="cex-chain-icon">⟠</div><div class="cex-chain-name">ETH 보유량</div><div class="cex-chain-value">{fmt_usd(eth_total)}</div><div style="margin-top:0.2rem;">{eth_delta}</div><div style="color:#8b949e;font-size:0.72rem;margin-top:0.2rem;">전체의 {eth_pct:.1f}%</div></div>', unsafe_allow_html=True)
     with sc4:
-        sol_total = cex_totals.get("SOL", 0)
-        sol_pct = (sol_total / grand_total * 100) if grand_total else 0
-        st.markdown(f"""
-        <div class="cex-summary-card">
-            <div class="cex-chain-icon">◎</div>
-            <div class="cex-chain-name">SOL 보유량</div>
-            <div class="cex-chain-value">{fmt_usd(sol_total)}</div>
-            <div style="color:#8b949e; font-size:0.72rem; margin-top:0.3rem;">전체의 {sol_pct:.1f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="cex-summary-card"><div class="cex-chain-icon">◎</div><div class="cex-chain-name">SOL 보유량</div><div class="cex-chain-value">{fmt_usd(sol_total)}</div><div style="margin-top:0.2rem;">{sol_delta}</div><div style="color:#8b949e;font-size:0.72rem;margin-top:0.2rem;">전체의 {sol_pct:.1f}%</div></div>', unsafe_allow_html=True)
 
     # ── 거래소별 상세 테이블 ──
     max_total = max(e["total_usd"] for e in cex_exchanges) if cex_exchanges else 1
-
-    # 테이블 헤더 — 들여쓰기 없이 시작해야 Streamlit이 코드블록으로 오인하지 않음
     table_rows = []
-
-    # 거래소 정렬 (총 보유량 내림차순)
     sorted_exchanges = sorted(cex_exchanges, key=lambda x: x["total_usd"], reverse=True)
-
     bar_colors = [
         "#f7931a", "#627eea", "#00d4aa", "#e84142",
         "#7b3fe4", "#26a17b", "#f0b90b", "#1da1f2",
@@ -864,13 +872,21 @@ if cex_data and cex_data.get("exchanges"):
         btc_v = ex["chains"].get("BTC", 0)
         eth_v = ex["chains"].get("ETH", 0)
         sol_v = ex["chains"].get("SOL", 0)
+        total_v = ex["total_usd"]
+
+        # 이전 대비 증감
+        prev_ex = prev_ex_map.get(ex["slug"])
+        d_btc = cex_delta_html(btc_v, prev_ex["chains"].get("BTC", 0)) if prev_ex else ""
+        d_eth = cex_delta_html(eth_v, prev_ex["chains"].get("ETH", 0)) if prev_ex else ""
+        d_sol = cex_delta_html(sol_v, prev_ex["chains"].get("SOL", 0), threshold=10000) if prev_ex else ""
+        d_total = cex_delta_html(total_v, prev_ex["total_usd"]) if prev_ex else ""
 
         table_rows.append(
             f'<tr><td>{ex["icon"]} {ex["name"]}</td>'
-            f'<td>{fmt_usd(btc_v) if btc_v else "-"}</td>'
-            f'<td>{fmt_usd(eth_v) if eth_v else "-"}</td>'
-            f'<td>{fmt_usd(sol_v) if sol_v else "-"}</td>'
-            f'<td>{fmt_usd(ex["total_usd"])}</td>'
+            f'<td>{fmt_usd(btc_v) if btc_v else "-"}{d_btc}</td>'
+            f'<td>{fmt_usd(eth_v) if eth_v else "-"}{d_eth}</td>'
+            f'<td>{fmt_usd(sol_v) if sol_v else "-"}{d_sol}</td>'
+            f'<td>{fmt_usd(total_v)}{d_total}</td>'
             f'<td><div style="display:flex;align-items:center;gap:6px;justify-content:flex-end;">'
             f'<span style="font-size:0.75rem;color:#656d76;min-width:36px;text-align:right;">{pct:.1f}%</span>'
             f'<div class="cex-bar-outer" style="width:70px;">'
@@ -878,13 +894,17 @@ if cex_data and cex_data.get("exchanges"):
             f'</div></div></td></tr>'
         )
 
-    # 합계 행
+    # 합계 행 + 증감
+    d_bt = cex_delta_html(cex_totals.get("BTC",0), prev_totals.get("BTC"), threshold=100000) if prev_grand else ""
+    d_et = cex_delta_html(cex_totals.get("ETH",0), prev_totals.get("ETH"), threshold=100000) if prev_grand else ""
+    d_st = cex_delta_html(cex_totals.get("SOL",0), prev_totals.get("SOL"), threshold=50000) if prev_grand else ""
+    d_gt = cex_delta_html(grand_total, prev_grand, threshold=100000) if prev_grand else ""
     total_row = (
         f'<tr class="cex-total-row"><td>합계 ({cex_data["exchange_count"]}개)</td>'
-        f'<td>{fmt_usd(cex_totals.get("BTC", 0))}</td>'
-        f'<td>{fmt_usd(cex_totals.get("ETH", 0))}</td>'
-        f'<td>{fmt_usd(cex_totals.get("SOL", 0))}</td>'
-        f'<td>{fmt_usd(grand_total)}</td>'
+        f'<td>{fmt_usd(cex_totals.get("BTC", 0))}{d_bt}</td>'
+        f'<td>{fmt_usd(cex_totals.get("ETH", 0))}{d_et}</td>'
+        f'<td>{fmt_usd(cex_totals.get("SOL", 0))}{d_st}</td>'
+        f'<td>{fmt_usd(grand_total)}{d_gt}</td>'
         f'<td style="text-align:right;font-size:0.75rem;color:#656d76;">100%</td></tr>'
     )
 
@@ -900,17 +920,21 @@ if cex_data and cex_data.get("exchanges"):
     st.markdown(full_table, unsafe_allow_html=True)
 
     # ── 해석 도움말 ──
+    delta_status = ''
+    if prev_grand is not None:
+        import datetime
+        elapsed = int(cex_fetch_time - st.session_state.get("cex_fetch_time", cex_fetch_time))
+        delta_status = '<br>🔄 <b>증감 화살표</b>: 이전 갱신(10분 전) 대비 변화량. <span style="color:#cf222e;">▲빨강</span> = 거래소 유입(매도 경계) / <span style="color:#1a7f37;">▼초록</span> = 거래소 유출(축적 신호)'
+    elif not prev_grand:
+        delta_status = '<br>🔄 <b>증감 화살표</b>: 다음 갱신(10분 후) 부터 이전 대비 변화량이 표시됩니다.'
+
     st.markdown(
         '<div style="background:#f6f8fa;border:1px solid #e1e4e8;border-radius:12px;'
         'padding:1rem 1.25rem;margin-top:1rem;font-size:0.8rem;color:#656d76;line-height:1.7;">'
         '📖 <b>읽는 법:</b><br>'
-        '• <b>BTC 보유량</b> = 해당 거래소가 비트코인 체인 위에 보유한 자산의 달러 가치<br>'
-        '• <b>ETH 보유량</b> = 이더리움 메인넷 위 보유 자산 (ERC-20 토큰 포함)<br>'
-        '• <b>총 보유량</b> = 모든 체인(BTC, ETH, SOL, TRON, Arbitrum 등)을 합산한 금액<br>'
-        '• 거래소 보유량 <span style="color:#cf222e;font-weight:600;">증가</span>'
-        ' → 매도 압력 ↑ (코인이 거래소로 유입) &nbsp;|&nbsp; '
-        '보유량 <span style="color:#1a7f37;font-weight:600;">감소</span>'
-        ' → 축적 신호 ↑ (코인이 거래소에서 인출)'
+        '• <b>BTC/ETH/SOL 보유량</b> = 해당 체인 위에 보유한 자산의 달러 가치<br>'
+        '• <b>총 보유량</b> = 모든 체인을 합산한 금액'
+        + delta_status +
         '</div>',
         unsafe_allow_html=True,
     )
