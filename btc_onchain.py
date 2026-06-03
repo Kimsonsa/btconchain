@@ -60,12 +60,21 @@ OUTPUT_DIR = "btc_data"          # --save 시 저장 폴더
 # ─────────────────────────────────────────────────────────────────────────────
 # HTTP 헬퍼 (표준 라이브러리)
 # ─────────────────────────────────────────────────────────────────────────────
+def _make_ssl_context():
+    """certifi가 있으면 사용, 없으면 기본 SSL 컨텍스트."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
 def get_json(url, headers=None, timeout=TIMEOUT, retries=RETRIES):
     """URL에서 JSON을 받아 dict/list로 반환. 실패 시 예외를 올림."""
     hdrs = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     if headers:
         hdrs.update(headers)
-    ctx = ssl.create_default_context()
+    ctx = _make_ssl_context()
     last_err = None
     for attempt in range(retries + 1):
         try:
@@ -73,7 +82,7 @@ def get_json(url, headers=None, timeout=TIMEOUT, retries=RETRIES):
             with urlopen(req, timeout=timeout, context=ctx) as resp:
                 raw = resp.read()
             return json.loads(raw.decode("utf-8"))
-        except (URLError, HTTPError, TimeoutError, ValueError) as e:
+        except (URLError, HTTPError, TimeoutError, ValueError, OSError) as e:
             last_err = e
     raise last_err
 

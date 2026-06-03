@@ -464,8 +464,22 @@ with col_r2:
         st.cache_data.clear()
         st.rerun()
 
-with st.spinner("📡 데이터 수집 중... (6개 소스에서 가져오는 중)"):
-    report = load_data()
+try:
+    with st.spinner("📡 데이터 수집 중... (6개 소스에서 가져오는 중)"):
+        report = load_data()
+except Exception as e:
+    st.error(f"⚠️ 데이터 수집 중 오류가 발생했습니다: {e}")
+    st.info("잠시 후 새로고침을 시도해 주세요.")
+    report = {
+        "timestamp_kst": "데이터 없음",
+        "price_market": {},
+        "network": {},
+        "valuation": {},
+        "sentiment": {},
+        "advanced": {},
+        "composite": {},
+        "errors": {"init": str(e)},
+    }
 
 pm = report.get("price_market", {})
 nw = report.get("network", {})
