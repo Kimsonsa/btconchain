@@ -612,6 +612,126 @@ def fetch_premium_indicators():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 실시간 청산(Liquidation) 데이터
+# ─────────────────────────────────────────────────────────────────────────────
+def fetch_liquidations():
+    """최근 BTC 청산 데이터 수집 (OKX 무료 API)."""
+    try:
+        data = get_json(
+            "https://www.okx.com/api/v5/public/liquidation-orders"
+            "?instType=SWAP&uly=BTC-USDT&state=filled",
+            timeout=10, retries=1,
+        )
+        if not data or data.get("code") != "0" or not data.get("data"):
+            return {}
+
+        details = data["data"][0].get("details", [])
+        if not details:
+            return {}
+
+        import time as _time
+        now_ms = int(_time.time() * 1000)
+
+        long_liq_vol = 0.0   # 롱 청산량 (BTC)
+        short_liq_vol = 0.0  # 숏 청산량 (BTC)
+        long_liq_usd = 0.0
+        short_liq_usd = 0.0
+        long_count = 0
+        short_count = 0
+        large_liqs = []  # $100K 이상 대형 청산
+        recent = []       # 최근 20건
+
+        for d in details:
+            side = d.get("side", "")          # sell = 롱 청산, buy = 숏 청산
+            sz = safe_float(d.get("sz", 0))   # BTC 수량
+            px = safe_float(d.get("bkPx", 0)) # 청산 가격
+            ts = int(d.get("ts", 0))
+            usd_val = sz * px if sz and px else 0
+
+            # 시간 필터: 최근 1시간 이내만
+            if now_ms - ts > 3600 * 1000:
+                continue
+
+            is_long_liq = (side == "sell")  # 롱 포지션이 청산되면 sell 주문 발생
+
+            if is_long_liq:
+                long_liq_vol += sz
+                long_liq_usd += usd_val
+                long_count += 1
+            else:
+                short_liq_vol += sz
+                short_liq_usd += usd_val
+                short_count += 1
+
+            # 대형 청산 ($100K+)
+            if usd_val >= 100000:
+                large_liqs.append({
+                    "type": "LONG" if is_long_liq else "SHORT",
+                    "btc": round(sz, 4),
+                    "usd": round(usd_val, 0),
+                    "price": round(px, 1),
+                    "ts": ts,
+                    "mins_ago": round((now_ms - ts) / 60000, 1),
+                })
+
+            # 최근 20건
+            if len(recent) < 20:
+                recent.append({
+                    "type": "LONG" if is_long_liq else "SHORT",
+                    "btc": round(sz, 4),
+                    "usd": round(usd_val, 0),
+                    "price": round(px, 1),
+                    "ts": ts,
+                    "mins_ago": round((now_ms - ts) / 60000, 1),
+                })
+
+        total_vol = long_liq_vol + short_liq_vol
+        total_usd = long_liq_usd + short_liq_usd
+
+        # 청산 비대칭 (롱 vs 숏)
+        if total_usd > 0:
+            long_pct = long_liq_usd / total_usd * 100
+            short_pct = short_liq_usd / total_usd * 100
+        else:
+            long_pct = short_pct = 50.0
+
+        # 시장 해석
+        if long_pct > 70:
+            signal = "bear"
+            desc = "롱 청산 압도적 — 하락 압력 강함"
+        elif short_pct > 70:
+            signal = "bull"
+            desc = "숏 청산 압도적 — 숏스퀴즈 발생 중"
+        elif total_usd < 500000:
+            signal = "neutral"
+            desc = "청산량 미미 — 변동성 낮음"
+        else:
+            signal = "neutral"
+            desc = "롱/숏 청산 균형"
+
+        return {
+            "long_liq_btc": round(long_liq_vol, 4),
+            "short_liq_btc": round(short_liq_vol, 4),
+            "long_liq_usd": round(long_liq_usd, 0),
+            "short_liq_usd": round(short_liq_usd, 0),
+            "total_liq_usd": round(total_usd, 0),
+            "long_count": long_count,
+            "short_count": short_count,
+            "long_pct": round(long_pct, 1),
+            "short_pct": round(short_pct, 1),
+            "large_liqs": large_liqs[:10],
+            "recent": recent,
+            "signal": signal,
+            "signal_desc": desc,
+            "source": "OKX",
+            "period": "1h",
+        }
+    except Exception as e:
+        print("[WARN] fetch_liquidations: %s" % e)
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 롱/숏 비율 (Binance, OKX, Bybit 무료 API)
 # ─────────────────────────────────────────────────────────────────────────────
 def fetch_long_short_ratio():

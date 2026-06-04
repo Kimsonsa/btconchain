@@ -9,6 +9,7 @@ from btc_onchain import (
     collect,
     compute_buy_signal,
     fetch_cex_reserves,
+    fetch_liquidations,
     fetch_premium_indicators,
     fetch_long_short_ratio,
     fetch_lightning_network,
@@ -451,6 +452,10 @@ def load_trending():
 @st.cache_data(ttl=600)
 def load_top_coins():
     return fetch_top_coins()
+
+@st.cache_data(ttl=60)
+def load_liquidations():
+    return fetch_liquidations()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 메인 UI
@@ -1331,6 +1336,108 @@ if ls_data and ls_data.get("exchanges"):
         + "".join(ls_rows) + '</tbody></table>'
     )
     st.markdown(ls_table, unsafe_allow_html=True)
+
+# ═══════ [청산] BTC 청산 데이터 ═══════════════════════════════════════════════
+st.markdown('<div class="section-header">💥 BTC 청산 데이터 (Liquidations)</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 <b>청산(Liquidation)</b> = 레버리지 포지션이 강제 종료되는 것. '
+    '롱 청산이 많으면 하락 압력, 숏 청산이 많으면 숏스퀘즈(반등). '
+    '대형 청산 발생 시 가격 급변의 신호일 수 있습니다.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+liq_data = load_liquidations()
+if liq_data and liq_data.get("total_liq_usd", 0) > 0:
+    # 신호 색상
+    sig = liq_data.get("signal", "neutral")
+    if sig == "bull":
+        sig_color, sig_bg = "#166534", "#f0fdf4"
+    elif sig == "bear":
+        sig_color, sig_bg = "#991b1b", "#fef2f2"
+    else:
+        sig_color, sig_bg = "#854d0e", "#fefce8"
+
+    lq1, lq2, lq3, lq4 = st.columns(4)
+    with lq1:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-label">총 청산량 (1시간)</div>'
+            f'<div class="metric-sublabel">OKX BTC-USDT 선물</div>'
+            f'<div class="metric-value-sm">${liq_data["total_liq_usd"]:,.0f}</div>'
+            f'<div class="interp-badge">{liq_data["long_count"] + liq_data["short_count"]}건</div></div>',
+            unsafe_allow_html=True)
+    with lq2:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-label">롱 청산</div>'
+            f'<div class="metric-sublabel">롱 포지션 강제 청산</div>'
+            f'<div class="metric-value-sm" style="color:#cf222e;">${liq_data["long_liq_usd"]:,.0f}</div>'
+            f'<div style="color:#656d76;font-size:0.72rem;">{liq_data["long_liq_btc"]:.2f} BTC ({liq_data["long_count"]}건)</div></div>',
+            unsafe_allow_html=True)
+    with lq3:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-label">숏 청산</div>'
+            f'<div class="metric-sublabel">숏 포지션 강제 청산</div>'
+            f'<div class="metric-value-sm" style="color:#1a7f37;">${liq_data["short_liq_usd"]:,.0f}</div>'
+            f'<div style="color:#656d76;font-size:0.72rem;">{liq_data["short_liq_btc"]:.2f} BTC ({liq_data["short_count"]}건)</div></div>',
+            unsafe_allow_html=True)
+    with lq4:
+        st.markdown(
+            f'<div class="metric-card" style="background:{sig_bg};">'
+            f'<div class="metric-label">청산 해석</div>'
+            f'<div class="metric-sublabel">롱 vs 숏 청산 비대칭</div>'
+            f'<div class="metric-value-sm" style="color:{sig_color};font-size:1rem;">{liq_data["signal_desc"]}</div></div>',
+            unsafe_allow_html=True)
+
+    # 롱/숏 청산 비율 바
+    lp = liq_data["long_pct"]
+    sp = liq_data["short_pct"]
+    st.markdown(
+        f'<div style="margin:0.8rem 0;">'
+        f'<div style="display:flex;justify-content:space-between;font-size:0.8rem;font-weight:600;margin-bottom:0.3rem;">'
+        f'<span style="color:#cf222e;">롱 청산 {lp:.1f}%</span>'
+        f'<span style="color:#1a7f37;">숏 청산 {sp:.1f}%</span></div>'
+        f'<div style="height:16px;border-radius:8px;overflow:hidden;display:flex;">'
+        f'<div style="width:{lp}%;background:linear-gradient(90deg,#ef4444,#f87171);"></div>'
+        f'<div style="width:{sp}%;background:linear-gradient(90deg,#4ade80,#22c55e);"></div>'
+        f'</div></div>',
+        unsafe_allow_html=True)
+
+    # 대형 청산 테이블
+    large = liq_data.get("large_liqs", [])
+    if large:
+        liq_rows = []
+        for lq in large:
+            t_color = "#cf222e" if lq["type"] == "LONG" else "#1a7f37"
+            t_icon = "🔴" if lq["type"] == "LONG" else "🟢"
+            liq_rows.append(
+                f'<tr><td style="color:{t_color};font-weight:700;">{t_icon} {lq["type"]}</td>'
+                f'<td style="font-weight:600;">${lq["usd"]:,.0f}</td>'
+                f'<td>{lq["btc"]} BTC</td>'
+                f'<td>${lq["price"]:,.1f}</td>'
+                f'<td style="color:#656d76;">{lq["mins_ago"]:.0f}분 전</td></tr>'
+            )
+        st.markdown(
+            '<div style="margin-top:0.8rem;"><span style="font-size:0.85rem;font-weight:600;">'
+            '🚨 대형 청산 ($100K+)</span></div>',
+            unsafe_allow_html=True)
+        st.markdown(
+            '<table class="cex-table"><thead><tr>'
+            '<th style="text-align:left;">유형</th><th>규모</th>'
+            '<th>BTC</th><th>청산가</th><th>시간</th>'
+            '</tr></thead><tbody>'
+            + "".join(liq_rows) + '</tbody></table>',
+            unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div style="text-align:center;color:#8b949e;font-size:0.85rem;padding:1rem;">'
+            '지난 1시간 $100K 이상 대형 청산 없음</div>',
+            unsafe_allow_html=True)
+else:
+    st.markdown(
+        '<div style="text-align:center;color:#8b949e;font-size:0.85rem;padding:2rem;">'
+        '청산 데이터를 불러오는 중 또는 데이터 없음</div>',
+        unsafe_allow_html=True)
 
 # ═══════ [13] BTC 선물 시장 ═══════════════════════════════════════════════════
 st.markdown('<div class="section-header">📊 BTC 선물 시장 (Derivatives)</div>', unsafe_allow_html=True)
