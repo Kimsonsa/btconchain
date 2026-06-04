@@ -1014,21 +1014,34 @@ pm_data = load_premiums()
 if pm_data:
     p1, p2, p3, p4 = st.columns(4)
     with p1:
-        cb_p = pm_data.get("coinbase_premium_pct", 0)
-        cb_color = "#1a7f37" if cb_p > 0 else "#cf222e" if cb_p < 0 else "#656d76"
-        cb_signal = "🟢 미국 기관 매수세" if cb_p > 0.05 else "🔴 미국 매도 압력" if cb_p < -0.05 else "⚪ 중립"
-        st.markdown(f'<div class="metric-card"><div class="metric-label">코인베이스 프리미엄</div><div class="metric-sublabel">Coinbase(USD) vs Binance(USDT) 가격 차이</div><div class="metric-value-sm" style="color:{cb_color};">{cb_p:+.3f}%</div><div style="color:#656d76;font-size:0.72rem;">${pm_data.get("coinbase_premium_usd",0):+.0f}</div><div class="interp-badge">{cb_signal}</div></div>', unsafe_allow_html=True)
+        cb_p = pm_data.get("coinbase_premium_pct")
+        if cb_p is not None:
+            cb_color = "#1a7f37" if cb_p > 0 else "#cf222e" if cb_p < 0 else "#656d76"
+            cb_signal = "🟢 미국 기관 매수세" if cb_p > 0.05 else "🔴 미국 매도 압력" if cb_p < -0.05 else "⚪ 중립"
+            cb_usd = pm_data.get("coinbase_premium_usd", 0)
+            st.markdown(f'<div class="metric-card"><div class="metric-label">코인베이스 프리미엄</div><div class="metric-sublabel">Coinbase(USD) vs Binance(USDT) 가격 차이</div><div class="metric-value-sm" style="color:{cb_color};">{cb_p:+.3f}%</div><div style="color:#656d76;font-size:0.72rem;">${cb_usd:+.0f}</div><div class="interp-badge">{cb_signal}</div></div>', unsafe_allow_html=True)
+        else:
+            src = pm_data.get("global_price_source", "")
+            err_hint = "VPN 사용 시 Binance/Coinbase 접속 차단 가능" if not src else "Coinbase API 응답 없음"
+            st.markdown(f'<div class="metric-card"><div class="metric-label">코인베이스 프리미엄</div><div class="metric-sublabel">Coinbase(USD) vs Binance(USDT) 가격 차이</div><div class="metric-value-sm" style="color:#8b949e;">데이터 없음</div><div style="color:#bc4c00;font-size:0.72rem;">⚠️ {err_hint}</div></div>', unsafe_allow_html=True)
     with p2:
-        kp = pm_data.get("kimchi_premium_pct", 0)
-        kp_color = "#cf222e" if kp > 3 else "#1a7f37" if kp > 0 else "#656d76"
-        kp_signal = "🟡 과열 주의" if kp > 5 else "🟢 한국 매수세" if kp > 0.5 else "⚪ 중립" if kp > -0.5 else "🔴 역프리미엄"
-        st.markdown(f'<div class="metric-card"><div class="metric-label">김치 프리미엄</div><div class="metric-sublabel">한국 업비트 vs 글로벌 가격 차이</div><div class="metric-value-sm" style="color:{kp_color};">{kp:+.3f}%</div><div style="color:#656d76;font-size:0.72rem;">₩{pm_data.get("upbit_krw_price",0):,.0f} vs ₩{pm_data.get("global_btc_krw",0):,.0f}</div><div class="interp-badge">{kp_signal}</div></div>', unsafe_allow_html=True)
+        kp = pm_data.get("kimchi_premium_pct")
+        if kp is not None:
+            kp_color = "#cf222e" if kp > 3 else "#1a7f37" if kp > 0 else "#cf222e" if kp < -1 else "#656d76"
+            kp_signal = "🟡 과열 주의" if kp > 5 else "🟢 한국 매수세" if kp > 0.5 else "⚪ 중립" if kp > -0.5 else "🔴 역프리미엄"
+            upbit_p = pm_data.get("upbit_krw_price", 0)
+            global_p = pm_data.get("global_btc_krw", 0)
+            st.markdown(f'<div class="metric-card"><div class="metric-label">김치 프리미엄</div><div class="metric-sublabel">한국 업비트 vs 글로벌 가격 차이</div><div class="metric-value-sm" style="color:{kp_color};">{kp:+.3f}%</div><div style="color:#656d76;font-size:0.72rem;">₩{upbit_p:,.0f} vs ₩{global_p:,.0f}</div><div class="interp-badge">{kp_signal}</div></div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="metric-card"><div class="metric-label">김치 프리미엄</div><div class="metric-sublabel">한국 업비트 vs 글로벌 가격 차이</div><div class="metric-value-sm" style="color:#8b949e;">데이터 없음</div><div style="color:#bc4c00;font-size:0.72rem;">⚠️ 환율 또는 가격 데이터 수집 실패</div></div>', unsafe_allow_html=True)
     with p3:
         addr = pm_data.get("active_addresses", 0)
         st.markdown(f'<div class="metric-card"><div class="metric-label">활성 주소 수</div><div class="metric-sublabel">24시간 내 비트코인 거래에 참여한 고유 지갑 수</div><div class="metric-value-sm">{fmt_num(addr)}</div><div class="interp-badge">네트워크 활성도</div></div>', unsafe_allow_html=True)
     with p4:
         rate = pm_data.get("usd_krw_rate", 0)
-        st.markdown(f'<div class="metric-card"><div class="metric-label">환율 (USD/KRW)</div><div class="metric-sublabel">USDT/KRW 기준 환산 환율</div><div class="metric-value-sm">₩{rate:,.0f}</div><div class="interp-badge">참고용</div></div>', unsafe_allow_html=True)
+        rate_src = pm_data.get("usd_krw_source", "")
+        src_label = rate_src if rate_src else "참고용"
+        st.markdown(f'<div class="metric-card"><div class="metric-label">환율 (USD/KRW)</div><div class="metric-sublabel">USDT/KRW 기준 환산 환율</div><div class="metric-value-sm">₩{rate:,.0f}</div><div class="interp-badge">{src_label}</div></div>', unsafe_allow_html=True)
 
     # 프리미엄 해석
     st.markdown(
@@ -1192,6 +1205,13 @@ if ls_data and ls_data.get("exchanges"):
             f'<div style="width:{l_w}%;background:#4ade80;"></div>'
             f'<div style="width:{s_w}%;background:#f87171;"></div>'
             f'</div></td></tr>'
+        )
+    # 실패한 거래소 행 추가
+    for fail in ls_data.get("failed_exchanges", []):
+        ls_rows.append(
+            f'<tr><td style="font-weight:600;color:#8b949e;">⚠️ {fail["name"]}</td>'
+            f'<td colspan="4" style="color:#bc4c00;font-size:0.78rem;text-align:left;">'
+            f'데이터 수집 실패 (VPN/지역 차단 가능)</td></tr>'
         )
     ls_table = (
         '<table class="cex-table"><thead><tr>'

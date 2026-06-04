@@ -478,16 +478,73 @@ def fetch_top_coins():
 # ─────────────────────────────────────────────────────────────────────────────
 # 프리미엄 지표 (코인베이스 프리미엄 + 김치 프리미엄)
 # ─────────────────────────────────────────────────────────────────────────────
+def _fetch_real_usd_krw():
+    """실제 USD/KRW 환율을 여러 무료 API에서 가져온다 (폴백 체인)."""
+    # 1차: exchangerate-api (무료, 키 불필요)
+    try:
+        data = get_json("https://open.er-api.com/v6/latest/USD", timeout=8, retries=1)
+        rate = safe_float(data.get("rates", {}).get("KRW"))
+        if rate and rate > 1000:
+            return rate, "exchangerate-api"
+    except Exception:
+        pass
+
+    # 2차: frankfurter (ECB 기반, 무료)
+    try:
+        data = get_json("https://api.frankfurter.dev/v1/latest?base=USD&symbols=KRW",
+                        timeout=8, retries=1)
+        rate = safe_float(data.get("rates", {}).get("KRW"))
+        if rate and rate > 1000:
+            return rate, "frankfurter"
+    except Exception:
+        pass
+
+    # 3차: 한국수출입은행 (공식 환율, 영업일만)
+    try:
+        data = get_json("https://www.koreaexim.go.kr/site/program/financial/exchangeJSON"
+                        "?authkey=SAMPLE&data=AP01&searchtype=AP01&cur_unit=USD",
+                        timeout=8, retries=0)
+        if data and isinstance(data, list):
+            for item in data:
+                if item.get("cur_unit") == "USD":
+                    rate_str = item.get("deal_bas_r", "").replace(",", "")
+                    rate = safe_float(rate_str)
+                    if rate and rate > 1000:
+                        return rate, "koreaexim"
+    except Exception:
+        pass
+
+    return None, None
+
+
 def fetch_premium_indicators():
     """코인베이스/김치 프리미엄 + 활성 주소 수 (무료 API)."""
     out = {}
-    # ── 바이낸스 기준 가격 ──
+    errors = []
+
+    # ── 글로벌 BTC 가격 (다중 소스) ──
+    bn_price = None
+
+    # 1차: 바이낸스
     try:
         bn = get_json("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
         bn_price = float(bn["price"])
         out["binance_price"] = bn_price
-    except Exception:
-        bn_price = None
+        out["global_price_source"] = "Binance"
+    except Exception as e:
+        errors.append("Binance 가격: %s" % e)
+
+    # 2차 폴백: CoinGecko
+    if bn_price is None:
+        try:
+            cg = get_json("https://api.coingecko.com/api/v3/simple/price"
+                          "?ids=bitcoin&vs_currencies=usd", timeout=10, retries=1)
+            bn_price = safe_float(cg.get("bitcoin", {}).get("usd"))
+            if bn_price:
+                out["binance_price"] = bn_price
+                out["global_price_source"] = "CoinGecko"
+        except Exception as e:
+            errors.append("CoinGecko 폴백: %s" % e)
 
     # ── 코인베이스 프리미엄 ──
     try:
@@ -497,8 +554,11 @@ def fetch_premium_indicators():
         if bn_price:
             out["coinbase_premium_pct"] = round((cb_price - bn_price) / bn_price * 100, 4)
             out["coinbase_premium_usd"] = round(cb_price - bn_price, 2)
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append("Coinbase: %s" % e)
+
+    # ── 실제 USD/KRW 환율 ──
+    real_usd_krw, rate_source = _fetch_real_usd_krw()
 
     # ── 김치 프리미엄 ──
     try:
@@ -506,25 +566,47 @@ def fetch_premium_indicators():
         krw_price = float(upbit[0]["trade_price"])
         out["upbit_krw_price"] = krw_price
 
-        # USDT/KRW로 환율 추정
-        usdt_kr = get_json("https://api.upbit.com/v1/ticker?markets=KRW-USDT")
-        usd_krw = float(usdt_kr[0]["trade_price"])
-        out["usd_krw_rate"] = usd_krw
+        # Upbit USDT/KRW (참고용으로 유지)
+        try:
+            usdt_kr = get_json("https://api.upbit.com/v1/ticker?markets=KRW-USDT")
+            out["upbit_usdt_krw"] = float(usdt_kr[0]["trade_price"])
+        except Exception:
+            pass
 
-        if bn_price:
+        # 환율 결정: 실제 환율 우선, 없으면 Upbit USDT/KRW 폴백
+        if real_usd_krw:
+            usd_krw = real_usd_krw
+            out["usd_krw_rate"] = usd_krw
+            out["usd_krw_source"] = rate_source
+        elif out.get("upbit_usdt_krw"):
+            usd_krw = out["upbit_usdt_krw"]
+            out["usd_krw_rate"] = usd_krw
+            out["usd_krw_source"] = "Upbit USDT/KRW (폴백)"
+            errors.append("실제 환율 API 실패 — Upbit USDT/KRW로 대체 (부정확할 수 있음)")
+        else:
+            usd_krw = None
+
+        if bn_price and usd_krw:
             global_krw = bn_price * usd_krw
             out["global_btc_krw"] = round(global_krw, 0)
-            out["kimchi_premium_pct"] = round((krw_price - global_krw) / global_krw * 100, 4)
-    except Exception:
-        pass
+            out["kimchi_premium_pct"] = round(
+                (krw_price - global_krw) / global_krw * 100, 4)
+    except Exception as e:
+        errors.append("Upbit/김프: %s" % e)
 
     # ── 활성 주소 수 ──
     try:
-        data = get_json("https://api.blockchain.info/charts/n-unique-addresses?timespan=1days&format=json")
+        data = get_json("https://api.blockchain.info/charts/n-unique-addresses"
+                        "?timespan=1days&format=json")
         if data.get("values"):
             out["active_addresses"] = int(data["values"][-1]["y"])
     except Exception:
         pass
+
+    if errors:
+        out["errors"] = errors
+        for err in errors:
+            print("[WARN] fetch_premium_indicators: %s" % err)
 
     return out
 
@@ -536,6 +618,7 @@ def fetch_long_short_ratio():
     """거래소별 BTC 롱/숏 비율 수집 (API 키 불필요)."""
     try:
         exchanges = []
+        failed = []
 
         # ── Binance 글로벌 롱숏 ──
         try:
@@ -550,8 +633,8 @@ def fetch_long_short_ratio():
                     "short_pct": safe_float(d.get("shortAccount", 0)) * 100,
                     "ratio": safe_float(d.get("longShortRatio", 0)),
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            failed.append({"name": "Binance", "error": str(e)})
 
         # ── Binance 탑 트레이더 포지션 ──
         try:
@@ -566,8 +649,8 @@ def fetch_long_short_ratio():
                     "short_pct": safe_float(d.get("shortAccount", 0)) * 100,
                     "ratio": safe_float(d.get("longShortRatio", 0)),
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            failed.append({"name": "Binance (Top)", "error": str(e)})
 
         # ── OKX ──
         try:
@@ -585,8 +668,8 @@ def fetch_long_short_ratio():
                         "short_pct": round(short_pct, 2),
                         "ratio": round(r, 4),
                     })
-        except Exception:
-            pass
+        except Exception as e:
+            failed.append({"name": "OKX", "error": str(e)})
 
         # ── Bybit ──
         try:
@@ -606,26 +689,31 @@ def fetch_long_short_ratio():
                         "short_pct": round(short_pct, 2),
                         "ratio": round(ratio, 4),
                     })
-        except Exception:
-            pass
+        except Exception as e:
+            failed.append({"name": "Bybit", "error": str(e)})
 
         if not exchanges:
-            return {}
+            return {"failed_exchanges": failed} if failed else {}
 
         # 전체 평균
         avg_long = sum(e["long_pct"] for e in exchanges) / len(exchanges)
         avg_short = sum(e["short_pct"] for e in exchanges) / len(exchanges)
         avg_ratio = avg_long / avg_short if avg_short else 0
 
-        return {
+        result = {
             "exchanges": exchanges,
             "avg_long_pct": round(avg_long, 2),
             "avg_short_pct": round(avg_short, 2),
             "avg_ratio": round(avg_ratio, 4),
             "exchange_count": len(exchanges),
         }
+        if failed:
+            result["failed_exchanges"] = failed
+            for f in failed:
+                print("[WARN] fetch_long_short_ratio %s 실패: %s" % (f["name"], f["error"]))
+        return result
     except Exception as e:
-        print(f"[WARN] fetch_long_short_ratio 실패: {e}")
+        print("[WARN] fetch_long_short_ratio 실패: %s" % e)
         return {}
 
 
