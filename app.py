@@ -1325,8 +1325,8 @@ if ls_data and ls_data.get("exchanges"):
     for fail in ls_data.get("failed_exchanges", []):
         ls_rows.append(
             f'<tr><td style="font-weight:600;color:#8b949e;">⚠️ {fail["name"]}</td>'
-            f'<td colspan="4" style="color:#bc4c00;font-size:0.78rem;text-align:left;">'
-            f'데이터 수집 실패 (VPN/지역 차단 가능)</td></tr>'
+            f'<td colspan="4" style="color:#8b949e;font-size:0.78rem;text-align:left;">'
+            f'배포 서버 지역 차단 (미국 IP에서 접근 불가)</td></tr>'
         )
     ls_table = (
         '<table class="cex-table"><thead><tr>'
