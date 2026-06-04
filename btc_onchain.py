@@ -692,6 +692,47 @@ def fetch_long_short_ratio():
         except Exception as e:
             failed.append({"name": "Bybit", "error": str(e)})
 
+        # ── Bitget ──
+        try:
+            bg = get_json("https://api.bitget.com/api/v2/mix/market/account-long-short"
+                          "?symbol=BTCUSDT&productType=USDT-FUTURES&period=5m")
+            if bg and bg.get("code") == "00000" and bg.get("data"):
+                d = bg["data"][0]
+                exchanges.append({
+                    "name": "Bitget",
+                    "icon": "🔵",
+                    "long_pct": round(safe_float(d.get("longAccountRatio", 0)) * 100, 2),
+                    "short_pct": round(safe_float(d.get("shortAccountRatio", 0)) * 100, 2),
+                    "ratio": safe_float(d.get("longShortAccountRatio", 0)),
+                })
+        except Exception as e:
+            failed.append({"name": "Bitget", "error": str(e)})
+
+        # ── HTX (Huobi) ──
+        try:
+            htx = get_json("https://api.hbdm.com/linear-swap-api/v1/swap_elite_account_ratio"
+                           "?contract_code=BTC-USDT&period=5min")
+            if htx and htx.get("status") == "ok":
+                lst = htx.get("data", {}).get("list", [])
+                if lst:
+                    d = lst[-1]  # 최신 데이터
+                    buy = safe_float(d.get("buy_ratio", 0))
+                    sell = safe_float(d.get("sell_ratio", 0))
+                    total = buy + sell
+                    if total > 0:
+                        long_pct = buy / total * 100
+                        short_pct = sell / total * 100
+                        ratio = long_pct / short_pct if short_pct else 0
+                        exchanges.append({
+                            "name": "HTX",
+                            "icon": "🔷",
+                            "long_pct": round(long_pct, 2),
+                            "short_pct": round(short_pct, 2),
+                            "ratio": round(ratio, 4),
+                        })
+        except Exception as e:
+            failed.append({"name": "HTX", "error": str(e)})
+
         if not exchanges:
             return {"failed_exchanges": failed} if failed else {}
 
