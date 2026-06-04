@@ -907,6 +907,255 @@ def composite_signal(d):
     return s, label
 
 
+def _lerp_score(value, low, high):
+    """value를 [low, high] 범위에서 0~100 점수로 선형 보간. low일수록 100(매수), high일수록 0."""
+    if value is None:
+        return None
+    return max(0.0, min(100.0, (1.0 - (value - low) / (high - low)) * 100.0))
+
+
+def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
+    """
+    온체인 + 파생상품 지표를 종합하여 매수 적기 판단.
+
+    반환값: {
+        "score": 0~100 (100 = 극매수 적기),
+        "grade": "A+" ~ "F",
+        "label": "적극 매수 구간" 등,
+        "summary": 한 줄 요약,
+        "indicators": [{"name", "value", "score", "weight", "signal", "desc"}, ...],
+        "bull_count": 강세 지표 수,
+        "bear_count": 약세 지표 수,
+        "neutral_count": 중립 지표 수,
+    }
+    """
+    indicators = []
+
+    def add(name, value, score, weight, desc):
+        if score is None:
+            return
+        if score >= 65:
+            signal = "bull"
+        elif score <= 35:
+            signal = "bear"
+        else:
+            signal = "neutral"
+        indicators.append({
+            "name": name,
+            "value": value,
+            "score": round(score, 1),
+            "weight": weight,
+            "signal": signal,
+            "desc": desc,
+        })
+
+    va = report.get("valuation", {})
+    se = report.get("sentiment", {})
+    ad = report.get("advanced", {})
+
+    # ── [1] MVRV (가중치 3) ──────────────────────────────────────────────
+    # 시가총액/실현시가총액. <1 극저평가, >3.7 극고평가
+    mvrv = va.get("mvrv")
+    s = _lerp_score(mvrv, 0.7, 4.0)
+    if mvrv is not None:
+        if mvrv < 1.0:
+            desc = "실현가 하회 — 역사적 바닥권"
+        elif mvrv < 1.5:
+            desc = "저평가 구간"
+        elif mvrv < 2.5:
+            desc = "적정 가치 범위"
+        elif mvrv < 3.5:
+            desc = "과열 진입"
+        else:
+            desc = "역사적 고점권"
+        add("MVRV", "%.2f" % mvrv, s, 3, desc)
+
+    # ── [2] NUPL (가중치 3) ──────────────────────────────────────────────
+    # 순미실현손익. <0 항복, >0.75 도취
+    nupl = va.get("nupl")
+    s = _lerp_score(nupl, -0.1, 0.75)
+    if nupl is not None:
+        if nupl < 0:
+            desc = "시장 전반 손실 — 항복 단계"
+        elif nupl < 0.25:
+            desc = "희망/두려움 구간"
+        elif nupl < 0.5:
+            desc = "낙관 구간"
+        elif nupl < 0.75:
+            desc = "확신/부정 구간"
+        else:
+            desc = "도취 — 고점 경계"
+        add("NUPL", "%.3f" % nupl, s, 3, desc)
+
+    # ── [3] 공포탐욕 지수 (가중치 2) ─────────────────────────────────────
+    # 0=극공포(매수), 100=극탐욕(매도)
+    fg = se.get("value")
+    if fg is not None:
+        s = 100.0 - fg  # 공포일수록 매수 점수 높음
+        if fg <= 25:
+            desc = "극심한 공포 — 역사적 매수 기회"
+        elif fg <= 45:
+            desc = "공포 — 매수 고려 구간"
+        elif fg <= 55:
+            desc = "중립"
+        elif fg <= 75:
+            desc = "탐욕 — 주의"
+        else:
+            desc = "극심한 탐욕 — 고점 경계"
+        add("공포탐욕", str(fg), s, 2, desc)
+
+    # ── [4] Puell Multiple (가중치 2) ────────────────────────────────────
+    # 채굴자 수익. <0.5 채굴자 항복(매수), >4 고수익(매도)
+    puell = ad.get("puell_multiple")
+    s = _lerp_score(puell, 0.3, 4.0)
+    if puell is not None:
+        if puell < 0.5:
+            desc = "채굴자 항복 — 역사적 매수 구간"
+        elif puell < 1.0:
+            desc = "채굴자 수익 저조"
+        elif puell < 2.0:
+            desc = "적정 수익"
+        else:
+            desc = "고수익 — 매도 압력 가능"
+        add("Puell", "%.2f" % puell, s, 2, desc)
+
+    # ── [5] SOPR (가중치 2) ──────────────────────────────────────────────
+    # 실현 손익 비율. <1 손실 실현(매수), >1.05 이익 실현(매도)
+    sopr = ad.get("sopr")
+    s = _lerp_score(sopr, 0.92, 1.08)
+    if sopr is not None:
+        if sopr < 0.97:
+            desc = "대규모 손실 실현 — 항복 신호"
+        elif sopr < 1.0:
+            desc = "손실 실현 중 — 매수 고려"
+        elif sopr < 1.03:
+            desc = "소폭 이익 실현"
+        else:
+            desc = "대규모 이익 실현 — 매도 압력"
+        add("SOPR", "%.3f" % sopr, s, 2, desc)
+
+    # ── [6] MVRV Z-Score (가중치 2) ──────────────────────────────────────
+    zscore = ad.get("mvrv_zscore")
+    s = _lerp_score(zscore, -0.5, 7.0)
+    if zscore is not None:
+        if zscore < 0:
+            desc = "극저평가 — 역사적 바닥"
+        elif zscore < 2:
+            desc = "저평가~적정"
+        elif zscore < 5:
+            desc = "적정~고평가"
+        else:
+            desc = "극고평가 — 역사적 고점"
+        add("Z-Score", "%.2f" % zscore, s, 2, desc)
+
+    # ── [7] 코인베이스 프리미엄 (가중치 1) ───────────────────────────────
+    if premium:
+        cb_pct = premium.get("coinbase_premium_pct")
+        if cb_pct is not None:
+            # 양수 프리미엄 = 기관 매수 = 강세 신호
+            s = max(0, min(100, 50 + cb_pct * 100))  # ±0.5% → 0~100
+            if cb_pct > 0.1:
+                desc = "미국 기관 매수세 유입"
+            elif cb_pct > -0.05:
+                desc = "중립"
+            else:
+                desc = "미국 매도 압력"
+            add("CB 프리미엄", "%+.3f%%" % cb_pct, s, 1, desc)
+
+    # ── [8] 김치 프리미엄 (가중치 1) ─────────────────────────────────────
+    if premium:
+        kp = premium.get("kimchi_premium_pct")
+        if kp is not None:
+            # 높은 김프(>5%) = 과열, 역프리미엄 = 매수 기회
+            s = _lerp_score(kp, -3.0, 8.0)
+            if kp > 5:
+                desc = "한국 과열 — 고점 경계"
+            elif kp > 2:
+                desc = "한국 매수세 강함"
+            elif kp > -1:
+                desc = "중립"
+            else:
+                desc = "역프리미엄 — 매수 기회"
+            add("김치 프리미엄", "%+.2f%%" % kp, s, 1, desc)
+
+    # ── [9] 롱/숏 비율 (가중치 1, 역행 지표) ─────────────────────────────
+    if long_short and long_short.get("avg_long_pct"):
+        avg_l = long_short["avg_long_pct"]
+        # 롱 과도 쏠림(>70%) = 숏스퀴즈 위험이지만 과열 신호 → 매수 점수 낮음
+        s = _lerp_score(avg_l, 35, 75)
+        if avg_l > 70:
+            desc = "롱 과열 — 숏스퀴즈 위험"
+        elif avg_l > 55:
+            desc = "롱 우위 — 상승 기대감"
+        elif avg_l > 45:
+            desc = "균형 상태"
+        else:
+            desc = "숏 우위 — 반등 가능성"
+        add("롱/숏", "%.1f%% 롱" % avg_l, s, 1, desc)
+
+    # ── [10] 펀딩레이트 (가중치 1) ───────────────────────────────────────
+    if derivatives and derivatives.get("avg_funding_rate") is not None:
+        fr = derivatives["avg_funding_rate"]
+        # 음수 = 숏 비용 지불 = 매수 신호, 양수 과도 = 과열
+        s = _lerp_score(fr, -0.02, 0.08)
+        if fr < -0.005:
+            desc = "숏 과열 — 역발상 매수 구간"
+        elif fr < 0.01:
+            desc = "중립 범위"
+        elif fr < 0.03:
+            desc = "롱 비용 증가"
+        else:
+            desc = "과열 — 레버리지 청산 위험"
+        add("펀딩레이트", "%.4f" % fr, s, 1, desc)
+
+    # ── 종합 점수 계산 (가중 평균) ───────────────────────────────────────
+    if not indicators:
+        return None
+
+    total_weight = sum(ind["weight"] for ind in indicators)
+    weighted_sum = sum(ind["score"] * ind["weight"] for ind in indicators)
+    final_score = round(weighted_sum / total_weight, 1) if total_weight else 0
+
+    bull_count = sum(1 for i in indicators if i["signal"] == "bull")
+    bear_count = sum(1 for i in indicators if i["signal"] == "bear")
+    neutral_count = sum(1 for i in indicators if i["signal"] == "neutral")
+
+    # 등급
+    if final_score >= 85:
+        grade, label = "A+", "💎 적극 매수 구간"
+        summary = "대부분의 온체인 지표가 역사적 저평가를 가리킵니다. 장기 투자 관점에서 매우 유리한 구간입니다."
+    elif final_score >= 70:
+        grade, label = "A", "🟢 매수 유리 구간"
+        summary = "다수의 지표가 저평가를 시사합니다. 분할 매수를 고려할 수 있는 구간입니다."
+    elif final_score >= 60:
+        grade, label = "B+", "🟢 매수 고려 구간"
+        summary = "시장이 저평가~적정 범위에 있습니다. 공포 심리가 있다면 기회일 수 있습니다."
+    elif final_score >= 50:
+        grade, label = "B", "🟡 중립 (관망)"
+        summary = "뚜렷한 방향성 없이 균형 상태입니다. 급한 매수보다는 관망이 적절합니다."
+    elif final_score >= 40:
+        grade, label = "C", "🟡 중립~주의"
+        summary = "일부 지표가 과열을 시사합니다. 신규 매수보다는 보유 유지가 적절합니다."
+    elif final_score >= 25:
+        grade, label = "D", "🟠 과열 주의"
+        summary = "다수의 지표가 과열을 가리킵니다. 분할 매도나 차익 실현을 고려할 구간입니다."
+    else:
+        grade, label = "F", "🔴 고점 경계"
+        summary = "대부분의 지표가 극도의 과열을 가리킵니다. 역사적 고점권에 해당하며 리스크 관리가 필요합니다."
+
+    return {
+        "score": final_score,
+        "grade": grade,
+        "label": label,
+        "summary": summary,
+        "indicators": indicators,
+        "bull_count": bull_count,
+        "bear_count": bear_count,
+        "neutral_count": neutral_count,
+        "indicator_count": len(indicators),
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 수집 오케스트레이션
 # ─────────────────────────────────────────────────────────────────────────────
