@@ -896,6 +896,151 @@ def fetch_long_short_ratio():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Coinalyze 집계 데이터 (무료 API 키 필요) — 바이낸스 포함 다거래소 청산/롱숏
+# 개별 거래소 API와 달리 Coinalyze가 자체 수집하므로 미국 IP(배포 서버)에서도
+# 바이낸스/Bybit 등의 데이터를 받을 수 있다. 키: 환경변수 COINALYZE_API_KEY.
+# ─────────────────────────────────────────────────────────────────────────────
+COINALYZE_BASE = "https://api.coinalyze.net/v1"
+
+# (표시명, 아이콘, Coinalyze 심볼)  거래소 코드: A=Binance 3=OKX 6=Bybit 4=HTX Y=Gate H=Hyperliquid 0=BitMEX
+_CZ_LS_MARKETS = [
+    ("Binance", "🟡", "BTCUSDT_PERP.A"),
+    ("OKX", "⚫", "BTCUSDT_PERP.3"),
+    ("Bybit", "🟠", "BTCUSDT.6"),
+    ("HTX", "🔵", "BTCUSDT_PERP.4"),
+    ("Gate.io", "🟢", "BTC_USDT.Y"),
+]
+_CZ_LIQ_MARKETS = [
+    ("Binance", "🟡", "BTCUSDT_PERP.A"),
+    ("OKX", "⚫", "BTCUSDT_PERP.3"),
+    ("Bybit", "🟠", "BTCUSDT.6"),
+    ("HTX", "🔵", "BTCUSDT_PERP.4"),
+    ("Gate.io", "🟢", "BTC_USDT.Y"),
+    ("Hyperliquid", "🔮", "BTC.H"),
+    ("BitMEX", "⚪", "BTCUSDT_PERP.0"),
+]
+
+
+def _coinalyze_get(path, params, api_key, timeout=12, retries=1):
+    url = "%s/%s?%s" % (COINALYZE_BASE, path, params)
+    return get_json(url, headers={"api_key": api_key}, timeout=timeout, retries=retries)
+
+
+def fetch_coinalyze_long_short(api_key):
+    """Coinalyze 집계 롱숏 계정비율 (바이낸스 포함). 키 없으면 {} 반환."""
+    if not api_key:
+        return {}
+    try:
+        import time as _t
+        markets = {sym: (name, icon) for name, icon, sym in _CZ_LS_MARKETS}
+        now = int(_t.time())
+        data = _coinalyze_get(
+            "long-short-ratio-history",
+            "symbols=%s&interval=5min&from=%d&to=%d" % (",".join(markets), now - 1800, now),
+            api_key,
+        )
+        exchanges = []
+        for row in data or []:
+            hist = row.get("history") or []
+            if not hist:
+                continue
+            last = hist[-1]
+            name, icon = markets.get(row.get("symbol"), (row.get("symbol"), "•"))
+            long_pct = safe_float(last.get("l"))
+            short_pct = safe_float(last.get("s"))
+            ratio = safe_float(last.get("r"))
+            if long_pct is None or short_pct is None:
+                continue
+            exchanges.append({
+                "name": name, "icon": icon,
+                "long_pct": round(long_pct, 2),
+                "short_pct": round(short_pct, 2),
+                "ratio": round(ratio, 4) if ratio else (
+                    round(long_pct / short_pct, 4) if short_pct else 0),
+            })
+        if not exchanges:
+            return {}
+        order = [n for n, _, _ in _CZ_LS_MARKETS]
+        exchanges.sort(key=lambda e: order.index(e["name"]) if e["name"] in order else 99)
+        avg_l = sum(e["long_pct"] for e in exchanges) / len(exchanges)
+        avg_s = sum(e["short_pct"] for e in exchanges) / len(exchanges)
+        return {
+            "exchanges": exchanges,
+            "avg_long_pct": round(avg_l, 2),
+            "avg_short_pct": round(avg_s, 2),
+            "avg_ratio": round(avg_l / avg_s, 4) if avg_s else 0,
+            "exchange_count": len(exchanges),
+            "source": "Coinalyze",
+        }
+    except Exception as e:
+        print("[WARN] fetch_coinalyze_long_short: %s" % e)
+        return {}
+
+
+def fetch_coinalyze_liquidations(api_key, window_hours=1):
+    """Coinalyze 집계 청산 (바이낸스 등 다거래소, 최근 window_hours, USD)."""
+    if not api_key:
+        return {}
+    try:
+        import time as _t
+        markets = {sym: (name, icon) for name, icon, sym in _CZ_LIQ_MARKETS}
+        now = int(_t.time())
+        data = _coinalyze_get(
+            "liquidation-history",
+            "symbols=%s&interval=5min&from=%d&to=%d&convert_to_usd=true"
+            % (",".join(markets), now - window_hours * 3600, now),
+            api_key,
+        )
+        exchanges = []
+        long_total = 0.0
+        short_total = 0.0
+        for row in data or []:
+            name, icon = markets.get(row.get("symbol"), (row.get("symbol"), "•"))
+            l_usd = sum(safe_float(p.get("l")) or 0.0 for p in (row.get("history") or []))
+            s_usd = sum(safe_float(p.get("s")) or 0.0 for p in (row.get("history") or []))
+            long_total += l_usd
+            short_total += s_usd
+            exchanges.append({
+                "name": name, "icon": icon,
+                "long_usd": round(l_usd, 0),
+                "short_usd": round(s_usd, 0),
+                "total_usd": round(l_usd + s_usd, 0),
+            })
+        if not exchanges:
+            return {}
+        exchanges.sort(key=lambda e: e["total_usd"], reverse=True)
+        total = long_total + short_total
+        if total > 0:
+            long_pct = long_total / total * 100
+            short_pct = short_total / total * 100
+        else:
+            long_pct = short_pct = 50.0
+        if long_pct > 70:
+            signal, desc = "bear", "롱 청산 압도적 — 하락 압력 강함"
+        elif short_pct > 70:
+            signal, desc = "bull", "숏 청산 압도적 — 숏스퀴즈 발생 중"
+        elif total < 500000:
+            signal, desc = "neutral", "청산량 미미 — 변동성 낮음"
+        else:
+            signal, desc = "neutral", "롱/숏 청산 균형"
+        return {
+            "long_liq_usd": round(long_total, 0),
+            "short_liq_usd": round(short_total, 0),
+            "total_liq_usd": round(total, 0),
+            "long_pct": round(long_pct, 1),
+            "short_pct": round(short_pct, 1),
+            "exchanges": exchanges,
+            "signal": signal,
+            "signal_desc": desc,
+            "source": "Coinalyze · %d개 거래소 집계" % len(exchanges),
+            "period": "%dh" % window_hours,
+        }
+    except Exception as e:
+        print("[WARN] fetch_coinalyze_liquidations: %s" % e)
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 거래소 보유량 (DeFiLlama 무료 API)
 # ─────────────────────────────────────────────────────────────────────────────
 CEX_SLUGS = [

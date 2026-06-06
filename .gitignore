@@ -9,6 +9,11 @@ build/
 # 수집 데이터 (로컬에만 보관)
 btc_data/
 
+# API 키 / 시크릿 (절대 커밋 금지)
+.streamlit/secrets.toml
+.env
+_*.py
+
 # OS
 .DS_Store
 Thumbs.db

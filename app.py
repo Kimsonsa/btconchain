@@ -4,6 +4,7 @@
 app.py — 비트코인 온체인 데이터 Streamlit 대시보드 (라이트 모드)
 """
 
+import os
 import streamlit as st
 from btc_onchain import (
     collect,
@@ -11,6 +12,8 @@ from btc_onchain import (
     compute_buy_signal,
     fetch_cex_reserves,
     fetch_liquidations,
+    fetch_coinalyze_liquidations,
+    fetch_coinalyze_long_short,
     fetch_premium_indicators,
     fetch_long_short_ratio,
     fetch_lightning_network,
@@ -399,6 +402,20 @@ def fg_color(val):
 # ─────────────────────────────────────────────────────────────────────────────
 # 데이터 수집
 # ─────────────────────────────────────────────────────────────────────────────
+def _get_coinalyze_key():
+    """Coinalyze 키: Streamlit Secrets 우선, 없으면 환경변수. (git엔 저장 안 함)"""
+    try:
+        k = st.secrets.get("COINALYZE_API_KEY", "")
+        if k:
+            return k
+    except Exception:
+        pass
+    return os.environ.get("COINALYZE_API_KEY", "")
+
+
+CZ_KEY = _get_coinalyze_key()
+
+
 @st.cache_data(ttl=120)
 def load_data():
     # 빠르게 변하는 데이터만 (가격/네트워크/멤풀/심리/활동). 느린 온체인 지표는 제외.
@@ -443,7 +460,12 @@ def load_premiums():
     return fetch_premium_indicators()
 
 @st.cache_data(ttl=120)
-def load_long_short():
+def load_long_short(cz_key=""):
+    # Coinalyze 키가 있으면 집계(바이낸스 포함, 미국 서버 OK) 우선, 실패 시 개별 거래소 직접 호출
+    if cz_key:
+        d = fetch_coinalyze_long_short(cz_key)
+        if d.get("exchanges"):
+            return d
     return fetch_long_short_ratio()
 
 @st.cache_data(ttl=600)
@@ -471,7 +493,12 @@ def load_top_coins():
     return fetch_top_coins()
 
 @st.cache_data(ttl=60)
-def load_liquidations():
+def load_liquidations(cz_key=""):
+    # Coinalyze 키가 있으면 집계 청산(바이낸스 포함) 우선, 실패 시 OKX 단독
+    if cz_key:
+        d = fetch_coinalyze_liquidations(cz_key)
+        if d.get("total_liq_usd", 0) > 0 or d.get("exchanges"):
+            return d
     return fetch_liquidations()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -536,9 +563,9 @@ st.markdown(f'<div class="sub-title">📅 {report.get("timestamp_kst", "")}</div
 buy_sig = compute_buy_signal(
     report,
     premium=load_premiums(),
-    long_short=load_long_short(),
+    long_short=load_long_short(CZ_KEY),
     derivatives=load_derivatives(),
-    liquidations=load_liquidations(),
+    liquidations=load_liquidations(CZ_KEY),
 )
 
 if buy_sig:
@@ -1371,7 +1398,7 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
 )
-ls_data = load_long_short()
+ls_data = load_long_short(CZ_KEY)
 if ls_data and ls_data.get("exchanges"):
     avg_l = ls_data["avg_long_pct"]
     avg_s = ls_data["avg_short_pct"]
@@ -1438,7 +1465,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-liq_data = load_liquidations()
+liq_data = load_liquidations(CZ_KEY)
 if liq_data and liq_data.get("total_liq_usd", 0) > 0:
     # 신호 색상
     sig = liq_data.get("signal", "neutral")
@@ -1449,27 +1476,40 @@ if liq_data and liq_data.get("total_liq_usd", 0) > 0:
     else:
         sig_color, sig_bg = "#854d0e", "#fefce8"
 
+    liq_src = liq_data.get("source", "OKX")
+    liq_period = liq_data.get("period", "1h")
+    n_events = liq_data.get("long_count", 0) + liq_data.get("short_count", 0)
+
+    # 롱/숏 보조 라벨 (Coinalyze엔 BTC수량/건수 없음 → 비중 표시)
+    lbtc = liq_data.get("long_liq_btc")
+    sbtc = liq_data.get("short_liq_btc")
+    long_sub = (f'{lbtc:.2f} BTC ({liq_data.get("long_count", 0)}건)'
+                if lbtc is not None else f'전체의 {liq_data["long_pct"]:.1f}%')
+    short_sub = (f'{sbtc:.2f} BTC ({liq_data.get("short_count", 0)}건)'
+                 if sbtc is not None else f'전체의 {liq_data["short_pct"]:.1f}%')
+    total_badge = f'{n_events}건' if n_events else liq_period
+
     lq1, lq2, lq3, lq4 = st.columns(4)
     with lq1:
         st.markdown(
-            f'<div class="metric-card"><div class="metric-label">총 청산량 (1시간)</div>'
-            f'<div class="metric-sublabel">OKX BTC-USDT 선물</div>'
+            f'<div class="metric-card"><div class="metric-label">총 청산량 ({liq_period})</div>'
+            f'<div class="metric-sublabel">{liq_src}</div>'
             f'<div class="metric-value-sm">${liq_data["total_liq_usd"]:,.0f}</div>'
-            f'<div class="interp-badge">{liq_data["long_count"] + liq_data["short_count"]}건</div></div>',
+            f'<div class="interp-badge">{total_badge}</div></div>',
             unsafe_allow_html=True)
     with lq2:
         st.markdown(
             f'<div class="metric-card"><div class="metric-label">롱 청산</div>'
             f'<div class="metric-sublabel">롱 포지션 강제 청산</div>'
             f'<div class="metric-value-sm" style="color:#cf222e;">${liq_data["long_liq_usd"]:,.0f}</div>'
-            f'<div style="color:#656d76;font-size:0.72rem;">{liq_data["long_liq_btc"]:.2f} BTC ({liq_data["long_count"]}건)</div></div>',
+            f'<div style="color:#656d76;font-size:0.72rem;">{long_sub}</div></div>',
             unsafe_allow_html=True)
     with lq3:
         st.markdown(
             f'<div class="metric-card"><div class="metric-label">숏 청산</div>'
             f'<div class="metric-sublabel">숏 포지션 강제 청산</div>'
             f'<div class="metric-value-sm" style="color:#1a7f37;">${liq_data["short_liq_usd"]:,.0f}</div>'
-            f'<div style="color:#656d76;font-size:0.72rem;">{liq_data["short_liq_btc"]:.2f} BTC ({liq_data["short_count"]}건)</div></div>',
+            f'<div style="color:#656d76;font-size:0.72rem;">{short_sub}</div></div>',
             unsafe_allow_html=True)
     with lq4:
         st.markdown(
@@ -1493,9 +1533,30 @@ if liq_data and liq_data.get("total_liq_usd", 0) > 0:
         f'</div></div>',
         unsafe_allow_html=True)
 
-    # 대형 청산 테이블
+    ex_liq = liq_data.get("exchanges", [])
     large = liq_data.get("large_liqs", [])
-    if large:
+    if ex_liq:
+        # 거래소별 청산 (Coinalyze 집계 — 바이낸스 포함)
+        ex_rows = []
+        for e in ex_liq:
+            ex_rows.append(
+                f'<tr><td style="font-weight:600;">{e["icon"]} {e["name"]}</td>'
+                f'<td style="color:#cf222e;">${e["long_usd"]:,.0f}</td>'
+                f'<td style="color:#1a7f37;">${e["short_usd"]:,.0f}</td>'
+                f'<td style="font-weight:600;">${e["total_usd"]:,.0f}</td></tr>'
+            )
+        st.markdown(
+            f'<div style="margin-top:0.8rem;"><span style="font-size:0.85rem;font-weight:600;">'
+            f'🏦 거래소별 청산 (최근 {liq_period})</span></div>',
+            unsafe_allow_html=True)
+        st.markdown(
+            '<table class="cex-table"><thead><tr>'
+            '<th style="text-align:left;">거래소</th><th>롱 청산</th>'
+            '<th>숏 청산</th><th>합계</th>'
+            '</tr></thead><tbody>'
+            + "".join(ex_rows) + '</tbody></table>',
+            unsafe_allow_html=True)
+    elif large:
         liq_rows = []
         for lq in large:
             t_color = "#cf222e" if lq["type"] == "LONG" else "#1a7f37"
