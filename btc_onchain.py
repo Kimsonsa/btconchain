@@ -1041,6 +1041,69 @@ def fetch_coinalyze_liquidations(api_key, window_hours=1):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 고래 대량 전송 (blockchain.info 미확인 TX — 무료, 키 불필요)
+# 거래소 "라벨"은 무료로는 불가능하므로(거래소가 입금주소를 계속 바꿈),
+# 아주 유명한 콜드월렛 몇 개만 best-effort로 식별하고 나머지는 '지갑↔지갑'으로 둔다.
+# ─────────────────────────────────────────────────────────────────────────────
+KNOWN_EXCHANGE_ADDRESSES = {
+    # 매우 잘 알려진 콜드월렛만 (오라벨 방지를 위해 보수적으로 유지)
+    "34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo": ("Binance", "🟡"),
+    "bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97": ("Bitfinex", "🟢"),
+}
+
+
+def fetch_whale_transfers(price_usd=None, min_btc=50.0, limit=12):
+    """blockchain.info 미확인(mempool) TX 중 대형 전송을 추려 반환. 무료/키 불필요.
+    거래소 라벨은 KNOWN_EXCHANGE_ADDRESSES에 등록된 주소에 한해 best-effort.
+    """
+    try:
+        data = get_json("https://blockchain.info/unconfirmed-transactions?format=json",
+                        timeout=12, retries=1)
+        txs = data.get("txs", []) if isinstance(data, dict) else []
+        transfers = []
+        for tx in txs:
+            outs = tx.get("out", []) or []
+            total_sat = sum((safe_float(o.get("value")) or 0) for o in outs)
+            btc = total_sat / 1e8
+            if btc < min_btc:
+                continue
+            in_addrs = [(i.get("prev_out") or {}).get("addr") for i in (tx.get("inputs") or [])]
+            out_addrs = [o.get("addr") for o in outs]
+            from_ex = next((KNOWN_EXCHANGE_ADDRESSES[a] for a in in_addrs
+                            if a in KNOWN_EXCHANGE_ADDRESSES), None)
+            to_ex = next((KNOWN_EXCHANGE_ADDRESSES[a] for a in out_addrs
+                          if a in KNOWN_EXCHANGE_ADDRESSES), None)
+            if to_ex and not from_ex:
+                direction, label, icon = "deposit", "%s 입금" % to_ex[0], to_ex[1]
+            elif from_ex and not to_ex:
+                direction, label, icon = "withdrawal", "%s 출금" % from_ex[0], from_ex[1]
+            elif from_ex and to_ex:
+                direction, label, icon = "internal", "%s→%s" % (from_ex[0], to_ex[0]), from_ex[1]
+            else:
+                direction, label, icon = "transfer", "지갑↔지갑", "🐋"
+            usd = btc * price_usd if price_usd else None
+            transfers.append({
+                "txid": tx.get("hash"),
+                "btc": round(btc, 2),
+                "usd": round(usd, 0) if usd else None,
+                "time": tx.get("time"),
+                "direction": direction,
+                "label": label,
+                "icon": icon,
+            })
+        transfers.sort(key=lambda x: x["btc"], reverse=True)
+        return {
+            "transfers": transfers[:limit],
+            "min_btc": min_btc,
+            "count": len(transfers),
+            "source": "blockchain.info (미확인 TX)",
+        }
+    except Exception as e:
+        print("[WARN] fetch_whale_transfers: %s" % e)
+        return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 거래소 보유량 (DeFiLlama 무료 API)
 # ─────────────────────────────────────────────────────────────────────────────
 CEX_SLUGS = [

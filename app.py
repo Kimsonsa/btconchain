@@ -14,6 +14,7 @@ from btc_onchain import (
     fetch_liquidations,
     fetch_coinalyze_liquidations,
     fetch_coinalyze_long_short,
+    fetch_whale_transfers,
     fetch_premium_indicators,
     fetch_long_short_ratio,
     fetch_lightning_network,
@@ -500,6 +501,10 @@ def load_liquidations(cz_key=""):
         if d.get("total_liq_usd", 0) > 0 or d.get("exchanges"):
             return d
     return fetch_liquidations()
+
+@st.cache_data(ttl=60)
+def load_whale_transfers():
+    return fetch_whale_transfers(price_usd=None, min_btc=20, limit=15)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 메인 UI
@@ -1229,6 +1234,70 @@ else:
         '<div class="error-box">'
         '⚠️ 거래소 보유량 데이터를 가져오지 못했습니다. 잠시 후 새로고침해 주세요.'
         '</div>',
+        unsafe_allow_html=True,
+    )
+
+# ═══════ [8.5] 고래 대량 전송 ═════════════════════════════════════════════════
+st.markdown('<div class="section-header">🐋 고래 대량 전송 (Whale Transfers) <span style="color:#8b949e;font-size:0.8rem;font-weight:400;">실시간 mempool · 1분 갱신</span></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 현재 <b>승인 대기 중(mempool)</b>인 거래 가운데 <b>20 BTC 이상 대형 전송</b>을 보여줍니다. '
+    '큰 자금의 이동은 시장 변동의 전조일 수 있습니다. '
+    '<br><span style="color:#8b949e;font-size:0.75rem;">'
+    '⚠️ 거래소 라벨(→바이낸스 등)은 무료 데이터로는 일부 유명 콜드월렛만 식별됩니다. '
+    '대부분은 주소 주인을 알 수 없어 <b>지갑↔지갑</b>으로 표시됩니다. '
+    '정확한 거래소 입출금 라벨링은 CryptoQuant 등 유료 서비스 영역입니다.</span>'
+    '</div>',
+    unsafe_allow_html=True,
+)
+wt_data = load_whale_transfers()
+_wt_price = pm.get("price_usd")
+if wt_data and wt_data.get("transfers"):
+    import time as _time
+    _now = _time.time()
+    wt_rows = []
+    for t in wt_data["transfers"]:
+        usd = (t["btc"] * _wt_price) if _wt_price else t.get("usd")
+        usd_str = fmt_usd(usd) if usd else "-"
+        # 방향별 색상 (거래소 입금=매도압력 빨강 / 출금=축적 초록 / 미상=회색)
+        if t["direction"] == "deposit":
+            d_color, d_txt = "#cf222e", "🔴 " + t["label"]
+        elif t["direction"] == "withdrawal":
+            d_color, d_txt = "#1a7f37", "🟢 " + t["label"]
+        elif t["direction"] == "internal":
+            d_color, d_txt = "#9a6700", t["icon"] + " " + t["label"]
+        else:
+            d_color, d_txt = "#656d76", t["icon"] + " " + t["label"]
+        ts = t.get("time")
+        mins = f'{(_now - ts) / 60:.0f}분 전' if ts else "-"
+        tx = t.get("txid") or ""
+        tx_link = (f'<a href="https://mempool.space/tx/{tx}" target="_blank" '
+                   f'style="color:#0969da;text-decoration:none;">{tx[:10]}…</a>') if tx else "-"
+        wt_rows.append(
+            f'<tr><td style="font-weight:700;">{t["btc"]:,.2f} BTC</td>'
+            f'<td style="font-weight:600;">{usd_str}</td>'
+            f'<td style="color:{d_color};font-weight:600;">{d_txt}</td>'
+            f'<td style="color:#656d76;">{mins}</td>'
+            f'<td style="font-size:0.78rem;">{tx_link}</td></tr>'
+        )
+    st.markdown(
+        '<table class="cex-table"><thead><tr>'
+        '<th style="text-align:left;">금액</th><th>USD 환산</th>'
+        '<th style="text-align:left;">구분</th><th>시간</th><th style="text-align:left;">TX</th>'
+        '</tr></thead><tbody>'
+        + "".join(wt_rows) + '</tbody></table>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div style="color:#8b949e;font-size:0.72rem;margin-top:0.5rem;">'
+        f'현재 mempool에 20 BTC 이상 전송 {wt_data.get("count", 0)}건 · 출처: {wt_data.get("source","")}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(
+        '<div style="text-align:center;color:#8b949e;font-size:0.85rem;padding:1.5rem;">'
+        '현재 승인 대기 중인 20 BTC 이상 대형 전송이 없습니다. (잠시 후 다시 확인)</div>',
         unsafe_allow_html=True,
     )
 
