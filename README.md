@@ -17,9 +17,8 @@
 | CoinGecko | 가격, 시총, 거래량, ATH, 도미넌스 |
 | mempool.space | 해시레이트, 난이도, 멤풀, 수수료 |
 | alternative.me | 공포·탐욕 지수 |
-| Coin Metrics | 실현시총, MVRV, NUPL, NVT 계산 |
-| blockchain.info | TX수, 거래량, 채굴자 수익 |
-| bitcoin-data.com | SOPR, Puell Multiple, MVRV Z-Score |
+| bitcoin-data.com | MVRV, NUPL, 실현가격, 실현시총, NVT, SOPR, Puell Multiple, MVRV Z-Score |
+| blockchain.info | TX수, 거래량, 채굴자 수익, 활성주소 |
 
 ## 🚀 사용법
 

@@ -97,6 +97,40 @@ def safe_float(v):
         return None
 
 
+def _extract_num(rec):
+    """bitcoin-data.com 응답 dict에서 날짜/타임스탬프를 제외한 첫 숫자 값을 추출."""
+    for k, v in rec.items():
+        if k.lower() in ("d", "date", "unixts", "theday", "time"):
+            continue
+        fv = safe_float(v)
+        if fv is not None:
+            return fv
+    return None
+
+
+def _bdc_value_and_date(slug, timeout=10, retries=2):
+    """bitcoin-data.com /v1/{slug}/last → (값, 기준일) 추출.
+    429(rate-limit)는 점증 백오프로 재시도. 그 외 실패는 예외를 올림.
+    """
+    import time as _t
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            data = get_json("https://bitcoin-data.com/v1/%s/last" % slug,
+                            timeout=timeout, retries=0)
+            rec = data[0] if isinstance(data, list) and data else data
+            if isinstance(rec, dict):
+                return _extract_num(rec), (rec.get("d") or rec.get("date") or "")[:10]
+            return None, None
+        except HTTPError as e:
+            last = e
+            if getattr(e, "code", None) == 429 and attempt < retries:
+                _t.sleep(0.8 * (attempt + 1))
+                continue
+            raise
+    raise last
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 데이터 소스별 수집 함수 (각각 실패해도 부분 결과 + 에러를 남기고 진행)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,52 +238,43 @@ def fetch_fear_greed():
     return out
 
 
-def fetch_coinmetrics():
+def fetch_valuation_metrics():
     """
-    Coin Metrics 커뮤니티 API (키 불필요).
-    시총/실현시총/공급량/활성주소/TX수/전송가치 → MVRV·NUPL·실현가격·NVT 계산.
+    밸류에이션 지표 (bitcoin-data.com, 키 불필요): MVRV / NUPL / 실현가격 / 실현시총 / NVT.
+    + 활성 주소 수(blockchain.info). 과거 Coin Metrics 커뮤니티 API(403 차단)를 대체.
+    각 호출 사이에 짧은 간격을 둬 rate-limit(429)을 피한다.
     """
+    import time as _time
     out = {}
-    metrics = ["PriceUSD", "CapMrktCurUSD", "CapRealUSD", "SplyCur",
-               "AdrActCnt", "TxCnt", "TxTfrValAdjUSD"]
-    start = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%d")
-    url = ("https://community-api.coinmetrics.io/v4/timeseries/asset-metrics"
-           "?assets=btc&metrics=" + ",".join(metrics) +
-           "&frequency=1d&page_size=100&start_time=" + start)
-    data = get_json(url)
-    rows = data.get("data", [])
-    if not rows:
-        return out
-    # 필요한 핵심 값이 채워진 가장 최근 행 선택 (커뮤니티 데이터는 1~2일 지연될 수 있음)
-    row = None
-    for r in reversed(rows):
-        if r.get("CapMrktCurUSD") and r.get("CapRealUSD") and r.get("SplyCur"):
-            row = r
-            break
-    if row is None:
-        row = rows[-1]
+    fields = [
+        ("mvrv", "mvrv"),                       # 시총/실현시총
+        ("nupl", "nupl"),                       # 순미실현손익
+        ("realized-price", "realized_price_usd"),  # 실현가격(평균 취득단가)
+        ("realized-cap", "realized_cap_usd"),   # 실현 시가총액
+        ("nvt", "nvt"),                         # Network Value to Transactions
+    ]
+    for i, (slug, key) in enumerate(fields):
+        try:
+            val, date = _bdc_value_and_date(slug)
+            if val is not None:
+                out[key] = val
+            if date and not out.get("cm_date"):
+                out["cm_date"] = date
+        except Exception:
+            pass
+        if i < len(fields) - 1:
+            _time.sleep(0.4)
+    out.setdefault("cm_date", "")
 
-    out["cm_date"] = (row.get("time") or "")[:10]
-    mcap = safe_float(row.get("CapMrktCurUSD"))
-    rcap = safe_float(row.get("CapRealUSD"))
-    sply = safe_float(row.get("SplyCur"))
-    tfr = safe_float(row.get("TxTfrValAdjUSD"))
-
-    out["market_cap_usd"] = mcap
-    out["realized_cap_usd"] = rcap
-    out["supply"] = sply
-    out["active_addresses"] = safe_float(row.get("AdrActCnt"))
-    out["tx_count"] = safe_float(row.get("TxCnt"))
-    out["price_usd_cm"] = safe_float(row.get("PriceUSD"))
-
-    # ── 파생 밸류에이션 지표 직접 계산 ──
-    if mcap and rcap:
-        out["mvrv"] = mcap / rcap                       # 시총 / 실현시총
-        out["nupl"] = (mcap - rcap) / mcap              # 순미실현손익
-    if rcap and sply:
-        out["realized_price_usd"] = rcap / sply         # 실현가격(평균 취득단가 근사)
-    if mcap and tfr:
-        out["nvt"] = mcap / tfr                         # Network Value to Transactions
+    # 활성 주소 수 (blockchain.info — 24h 고유 주소)
+    try:
+        d = get_json("https://api.blockchain.info/charts/n-unique-addresses"
+                     "?timespan=2days&format=json", timeout=10, retries=1)
+        vals = d.get("values") or []
+        if vals:
+            out["active_addresses"] = safe_float(vals[-1].get("y"))
+    except Exception:
+        pass
     return out
 
 
@@ -269,34 +294,26 @@ def fetch_blockchain_stats():
 def fetch_bitcoin_data_advanced():
     """
     bitcoin-data.com 무료 엔드포인트 (선택).
-    SOPR / Puell Multiple / MVRV Z-Score 등 UTXO 기반 지표.
+    SOPR / Puell Multiple / MVRV Z-Score / Reserve Risk 등 UTXO 기반 지표.
     포맷이 바뀌거나 막히면 조용히 스킵된다.
     """
+    import time as _time
     out = {}
-    slugs = {
-        "sopr": "sopr",
-        "puell_multiple": "puell-multiple",
-        "mvrv_zscore": "mvrv-zscore",
-        "reserve_risk": "reserve-risk",
-    }
-    for key, slug in slugs.items():
+    slugs = [
+        ("sopr", "sopr"),
+        ("puell_multiple", "puell-multiple"),
+        ("mvrv_zscore", "mvrv-zscore"),
+        ("reserve_risk", "reserve-risk"),
+    ]
+    for i, (key, slug) in enumerate(slugs):
         try:
-            data = get_json("https://bitcoin-data.com/v1/%s/last" % slug, retries=0)
-            # 응답은 list[dict] 또는 dict 형태일 수 있어 방어적으로 숫자 필드 추출
-            rec = data[0] if isinstance(data, list) and data else data
-            if isinstance(rec, dict):
-                val = None
-                for k, v in rec.items():
-                    if k.lower() in ("d", "date", "unixts", "theday", "time"):
-                        continue
-                    fv = safe_float(v)
-                    if fv is not None:
-                        val = fv
-                        break
-                if val is not None:
-                    out[key] = val
+            val, _ = _bdc_value_and_date(slug)
+            if val is not None:
+                out[key] = val
         except Exception:
-            continue
+            pass
+        if i < len(slugs) - 1:
+            _time.sleep(0.4)
     return out
 
 
@@ -1408,7 +1425,30 @@ def compute_buy_signal(report, premium=None, long_short=None,
 # ─────────────────────────────────────────────────────────────────────────────
 # 수집 오케스트레이션
 # ─────────────────────────────────────────────────────────────────────────────
-def collect():
+def fetch_onchain_slow():
+    """
+    bitcoin-data.com 기반 '느린' 일간 온체인 지표(밸류에이션 + 고급)를 한 번에 수집.
+    이 소스는 IP당 시간당 10회 제한이 있으므로, 호출부에서 반드시 긴 캐시(시간 단위)로 묶어
+    사용해야 한다. (MVRV/NUPL 등은 하루 단위로만 변하므로 자주 받을 필요가 없다.)
+    """
+    out = {"valuation": {}, "advanced": {}}
+    try:
+        out["valuation"] = fetch_valuation_metrics()
+    except Exception:
+        pass
+    if ENABLE_BITCOIN_DATA:
+        try:
+            out["advanced"] = fetch_bitcoin_data_advanced()
+        except Exception:
+            pass
+    return out
+
+
+def collect(include_slow=True):
+    """전체 리포트 수집.
+    include_slow=False면 bitcoin-data.com 느린 지표(밸류에이션/고급)는 건너뛴다
+    (대시보드에서 별도의 긴 캐시로 따로 받기 위함 — 시간당 10회 제한 대응).
+    """
     report = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "timestamp_kst": (datetime.now(timezone.utc) + timedelta(hours=9))
@@ -1420,12 +1460,8 @@ def collect():
         ("price_market", fetch_coingecko),
         ("network", fetch_mempool_space),
         ("sentiment", fetch_fear_greed),
-        ("valuation", fetch_coinmetrics),
         ("activity", fetch_blockchain_stats),
     ]
-    if ENABLE_BITCOIN_DATA:
-        jobs.append(("advanced", fetch_bitcoin_data_advanced))
-
     for key, fn in jobs:
         try:
             report[key] = fn()
@@ -1433,11 +1469,18 @@ def collect():
             report[key] = {}
             report["errors"][key] = "%s: %s" % (type(e).__name__, e)
 
-    # 가격 폴백: CoinGecko 실패 시 mempool / Coin Metrics 가격 사용
+    # 느린 온체인 지표 (밸류에이션 + 고급)
+    report.setdefault("valuation", {})
+    report.setdefault("advanced", {})
+    if include_slow:
+        slow = fetch_onchain_slow()
+        report["valuation"] = slow.get("valuation", {})
+        report["advanced"] = slow.get("advanced", {})
+
+    # 가격 폴백: CoinGecko 실패 시 mempool 가격 사용
     pm = report.get("price_market", {})
     if not pm.get("price_usd"):
-        pm["price_usd"] = (report.get("network", {}).get("price_usd_mempool")
-                           or report.get("valuation", {}).get("price_usd_cm"))
+        pm["price_usd"] = report.get("network", {}).get("price_usd_mempool")
         report["price_market"] = pm
 
     s, label = composite_signal(report)
@@ -1553,7 +1596,7 @@ def render(report, color=True, quiet=False):
     out.append("  누적 채굴량      %s BTC" % fmt_num(ac.get("total_btc_mined")))
 
     # [5] 밸류에이션 (고급 지표 — 무료 계산)
-    out.append(c.b("\n[5] 밸류에이션 지표  ") + c.dim("(Coin Metrics 기반 계산, 기준일 %s)" % va.get("cm_date", "-")))
+    out.append(c.b("\n[5] 밸류에이션 지표  ") + c.dim("(bitcoin-data.com, 기준일 %s)" % va.get("cm_date", "-")))
     mvrv = va.get("mvrv")
     nupl = va.get("nupl")
     out.append("  MVRV            %s   %s" % (
