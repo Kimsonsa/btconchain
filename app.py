@@ -506,6 +506,12 @@ def load_liquidations(cz_key=""):
 def load_whale_transfers():
     return fetch_whale_transfers(price_usd=None, min_btc=20, limit=15)
 
+@st.cache_data(ttl=600)
+def load_cycle():
+    # TradeAI RSI 파동 엔진을 월/주/일봉으로 — 캔들 기반이라 다소 무거워 10분 캐시
+    from cycle_signal import analyze_cycle
+    return analyze_cycle("BTCUSDT")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 메인 UI
 # ─────────────────────────────────────────────────────────────────────────────
@@ -749,6 +755,54 @@ else:
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+# ═══════ [기술적 사이클 + 온체인 종합 의견] ═══════════════════════════════════
+st.markdown('<div class="section-header">🌀 기술적 사이클 + 온체인 종합 의견 <span style="color:#8b949e;font-size:0.8rem;font-weight:400;">RSI 파동 분석(월/주/일봉) · 10분 갱신</span></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="color:#656d76;font-size:0.82rem;margin-bottom:1rem;line-height:1.6;">'
+    '💡 멀티 타임프레임 <b>RSI·이동평균·다이버전스</b> 등 기술적 분석으로 <b>사이클상 저점/고점 위치</b>를 판정하고, '
+    '온체인 밸류에이션과 결합해 <b>시간축별 매매 관점</b>을 제시합니다. '
+    '<br><span style="color:#8b949e;font-size:0.75rem;">⚠️ 상세 진입가/손절이 아니라 "지금 사이클상 어디쯤인가" 수준의 참고용 판정입니다. 투자 자문 아님.</span>'
+    '</div>',
+    unsafe_allow_html=True,
+)
+try:
+    from cycle_signal import combine_opinion
+    _cycle = load_cycle()
+    _combined = combine_opinion(_cycle, buy_sig if buy_sig else None)
+except Exception as _e:
+    _combined = None
+
+if _combined and _combined.get("horizons"):
+    # 헤드라인 (장기 중심)
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg,#f8fafc,#eef2f7);border:1px solid #d1d9e0;'
+        f'border-radius:16px;padding:1.1rem 1.5rem;margin-bottom:1rem;">'
+        f'<div style="font-size:0.78rem;color:#656d76;font-weight:600;margin-bottom:0.3rem;">📌 종합 매매 의견 (장기 기준)</div>'
+        f'<div style="font-size:1.15rem;font-weight:700;color:#1f2328;line-height:1.5;">{_combined["headline"]}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    cyc_cols = st.columns(len(_combined["horizons"]))
+    _ICON = {"장기": "🗓️", "스윙": "📈", "단기": "⚡"}
+    for col, h in zip(cyc_cols, _combined["horizons"]):
+        with col:
+            st.markdown(
+                f'<div class="metric-card" style="border-top:3px solid {h["ta_color"]};">'
+                f'<div class="metric-label">{_ICON.get(h["name"],"")} {h["name"]} <span style="color:#8b949e;font-weight:400;">({h["tf"]}봉)</span></div>'
+                f'<div style="font-size:1.4rem;font-weight:800;color:{h["ta_color"]};margin:0.2rem 0;">{h["ta_label"]}</div>'
+                f'<div style="font-size:0.75rem;color:#656d76;">RSI {h["rsi"]} · {h["regime_kr"]} · {h["cycle_pos"]}</div>'
+                f'<div style="font-size:0.82rem;color:#1f2328;margin-top:0.5rem;line-height:1.45;">{h["opinion"]}</div>'
+                + (f'<div style="font-size:0.72rem;color:#bc4c00;margin-top:0.3rem;">⚑ {h["note"]}</div>' if h["note"] else "")
+                + '</div>',
+                unsafe_allow_html=True,
+            )
+else:
+    st.markdown(
+        '<div style="text-align:center;color:#8b949e;font-size:0.85rem;padding:1.5rem;">'
+        '기술적 사이클 데이터를 불러오는 중이거나 일시적으로 가져오지 못했습니다.</div>',
+        unsafe_allow_html=True,
+    )
 
 # ═══════ [1] 가격 & 시장 ═════════════════════════════════════════════════════
 st.markdown('<div class="section-header">💰 가격 & 시장 현황</div>', unsafe_allow_html=True)
