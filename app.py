@@ -503,19 +503,37 @@ buy_sig = compute_buy_signal(
     premium=load_premiums(),
     long_short=load_long_short(),
     derivatives=load_derivatives(),
+    liquidations=load_liquidations(),
 )
 
 if buy_sig:
     bs = buy_sig["score"]
-    # 점수에 따른 색상 (높을수록 매수 = 초록)
-    if bs >= 70:
+    v_score = buy_sig.get("value_score")
+    t_score = buy_sig.get("timing_score")
+    # 등급에 따른 색상 (매수 우호적일수록 초록)
+    grade = buy_sig["grade"]
+    if grade in ("A+", "A"):
         bs_color, bs_bg, bs_border = "#166534", "linear-gradient(135deg, #f0fdf4, #dcfce7)", "#86efac"
-    elif bs >= 50:
+    elif grade in ("B+", "B"):
         bs_color, bs_bg, bs_border = "#854d0e", "linear-gradient(135deg, #fefce8, #fef9c3)", "#fde047"
-    elif bs >= 35:
+    elif grade in ("C", "D"):
         bs_color, bs_bg, bs_border = "#9a3412", "linear-gradient(135deg, #fff7ed, #ffedd5)", "#fdba74"
     else:
         bs_color, bs_bg, bs_border = "#991b1b", "linear-gradient(135deg, #fef2f2, #fee2e2)", "#fca5a5"
+
+    def _score_color(sc):
+        if sc is None:
+            return "#8b949e"
+        if sc >= 60:
+            return "#166534"
+        if sc >= 42:
+            return "#854d0e"
+        return "#991b1b"
+
+    v_color = _score_color(v_score)
+    t_color = _score_color(t_score)
+    v_disp = f"{v_score:.0f}" if v_score is not None else "-"
+    t_disp = f"{t_score:.0f}" if t_score is not None else "-"
 
     # 메인 카드
     st.markdown(f"""
@@ -526,7 +544,7 @@ if buy_sig:
                 🎯 온체인 데이터 기반 매수 적기 판단
             </div>
             <div style="font-size:4.5rem;font-weight:900;color:{bs_color};line-height:1;"
-            >{buy_sig["grade"]}</div>
+            >{grade}</div>
             <div style="font-size:1.4rem;font-weight:700;color:{bs_color};margin:0.3rem 0;">
                 {buy_sig["label"]}
             </div>
@@ -535,77 +553,114 @@ if buy_sig:
                 {buy_sig["summary"]}
             </div>
         </div>
-        <div style="display:flex;justify-content:center;gap:2rem;flex-wrap:wrap;
+        <div style="display:flex;justify-content:center;gap:1.5rem;flex-wrap:wrap;
                     margin:1rem 0;">
-            <div style="text-align:center;">
-                <div style="font-size:2rem;font-weight:800;color:{bs_color};">{bs}</div>
-                <div style="font-size:0.75rem;color:#656d76;">종합 점수 / 100</div>
+            <div style="text-align:center;min-width:90px;">
+                <div style="font-size:2rem;font-weight:800;color:{v_color};">{v_disp}</div>
+                <div style="font-size:0.75rem;color:#656d76;">📈 장기 가치</div>
             </div>
-            <div style="text-align:center;">
+            <div style="text-align:center;min-width:90px;">
+                <div style="font-size:2rem;font-weight:800;color:{t_color};">{t_disp}</div>
+                <div style="font-size:0.75rem;color:#656d76;">⏱️ 단기 타이밍</div>
+            </div>
+            <div style="text-align:center;min-width:90px;">
                 <div style="font-size:2rem;font-weight:800;color:#166534;">
                     {buy_sig["bull_count"]}</div>
                 <div style="font-size:0.75rem;color:#656d76;">🟢 매수 신호</div>
             </div>
-            <div style="text-align:center;">
+            <div style="text-align:center;min-width:90px;">
                 <div style="font-size:2rem;font-weight:800;color:#656d76;">
                     {buy_sig["neutral_count"]}</div>
                 <div style="font-size:0.75rem;color:#656d76;">🟡 중립</div>
             </div>
-            <div style="text-align:center;">
+            <div style="text-align:center;min-width:90px;">
                 <div style="font-size:2rem;font-weight:800;color:#991b1b;">
                     {buy_sig["bear_count"]}</div>
                 <div style="font-size:0.75rem;color:#656d76;">🔴 매도 신호</div>
             </div>
         </div>
-        <div style="margin:1rem auto;max-width:500px;">
-            <div style="background:#e5e7eb;border-radius:10px;height:14px;overflow:hidden;">
-                <div style="height:100%;border-radius:10px;width:{bs}%;
+        <div style="margin:1rem auto;max-width:520px;">
+            <div style="font-size:0.7rem;color:#656d76;margin-bottom:0.2rem;">
+                장기 가치 (저평가일수록 ▶ 오른쪽)
+            </div>
+            <div style="background:#e5e7eb;border-radius:10px;height:10px;overflow:hidden;">
+                <div style="height:100%;border-radius:10px;width:{v_score or 0}%;
                      background:linear-gradient(90deg,#ef4444,#f97316,#eab308,#22c55e,#16a34a);
                      transition:width 1s ease;"></div>
             </div>
-            <div style="display:flex;justify-content:space-between;font-size:0.7rem;
-                        color:#9ca3af;margin-top:0.3rem;">
-                <span>🔴 매도</span><span>🟡 중립</span><span>🟢 매수</span>
+            <div style="font-size:0.7rem;color:#656d76;margin:0.5rem 0 0.2rem 0;">
+                단기 타이밍 (진입 우호적일수록 ▶ 오른쪽)
+            </div>
+            <div style="background:#e5e7eb;border-radius:10px;height:10px;overflow:hidden;">
+                <div style="height:100%;border-radius:10px;width:{t_score or 0}%;
+                     background:linear-gradient(90deg,#ef4444,#f97316,#eab308,#22c55e,#16a34a);
+                     transition:width 1s ease;"></div>
             </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # 지표별 분석 테이블
-    ind_rows = []
-    for ind in buy_sig["indicators"]:
-        sig_icon = "🟢" if ind["signal"] == "bull" else "🔴" if ind["signal"] == "bear" else "🟡"
-        sig_color = "#166534" if ind["signal"] == "bull" else "#991b1b" if ind["signal"] == "bear" else "#854d0e"
-        bar_color = "#4ade80" if ind["signal"] == "bull" else "#f87171" if ind["signal"] == "bear" else "#fbbf24"
-        wt_stars = "★" * ind["weight"] + "☆" * (3 - ind["weight"])
-        ind_rows.append(
-            f'<tr>'
-            f'<td style="font-weight:600;">{sig_icon} {ind["name"]}</td>'
-            f'<td style="font-weight:600;">{ind["value"]}</td>'
-            f'<td><div style="display:flex;align-items:center;gap:0.5rem;">'
-            f'<div style="background:#e5e7eb;border-radius:6px;height:10px;width:80px;overflow:hidden;">'
-            f'<div style="height:100%;width:{ind["score"]}%;background:{bar_color};border-radius:6px;"></div>'
-            f'</div><span style="font-size:0.8rem;font-weight:600;color:{sig_color};">{ind["score"]}</span></div></td>'
-            f'<td style="color:#8b949e;font-size:0.75rem;">{wt_stars}</td>'
-            f'<td style="color:{sig_color};font-size:0.8rem;">{ind["desc"]}</td>'
-            f'</tr>'
+    # 단기 급락/위험 경고 배너
+    if buy_sig.get("short_term_warning"):
+        st.markdown(
+            f'<div style="background:#fff7ed;border:1px solid #fdba74;border-radius:12px;'
+            f'padding:0.9rem 1.25rem;margin:-0.3rem 0 0.8rem 0;color:#9a3412;'
+            f'font-size:0.88rem;line-height:1.6;font-weight:500;">'
+            f'⚠️ <b>단기 위험 신호:</b> {buy_sig["short_term_note"]}'
+            f'</div>',
+            unsafe_allow_html=True,
         )
-    st.markdown(
-        '<table class="cex-table"><thead><tr>'
-        '<th style="text-align:left;">지표</th>'
-        '<th>현재값</th><th>매수 점수</th>'
-        '<th>가중치</th><th style="text-align:left;">판단</th>'
-        '</tr></thead><tbody>'
-        + "".join(ind_rows) + '</tbody></table>',
-        unsafe_allow_html=True,
-    )
+
+    # 지표 테이블 (가치 / 타이밍 분리 렌더)
+    def _ind_table(title, hint, inds):
+        if not inds:
+            return
+        rows = []
+        for ind in inds:
+            sig_icon = "🟢" if ind["signal"] == "bull" else "🔴" if ind["signal"] == "bear" else "🟡"
+            sig_color = "#166534" if ind["signal"] == "bull" else "#991b1b" if ind["signal"] == "bear" else "#854d0e"
+            bar_color = "#4ade80" if ind["signal"] == "bull" else "#f87171" if ind["signal"] == "bear" else "#fbbf24"
+            wt_stars = "★" * ind["weight"] + "☆" * (3 - ind["weight"])
+            rows.append(
+                f'<tr>'
+                f'<td style="font-weight:600;">{sig_icon} {ind["name"]}</td>'
+                f'<td style="font-weight:600;">{ind["value"]}</td>'
+                f'<td><div style="display:flex;align-items:center;gap:0.5rem;">'
+                f'<div style="background:#e5e7eb;border-radius:6px;height:10px;width:80px;overflow:hidden;">'
+                f'<div style="height:100%;width:{ind["score"]}%;background:{bar_color};border-radius:6px;"></div>'
+                f'</div><span style="font-size:0.8rem;font-weight:600;color:{sig_color};">{ind["score"]}</span></div></td>'
+                f'<td style="color:#8b949e;font-size:0.75rem;">{wt_stars}</td>'
+                f'<td style="color:{sig_color};font-size:0.8rem;">{ind["desc"]}</td>'
+                f'</tr>'
+            )
+        st.markdown(
+            f'<div style="font-size:0.92rem;font-weight:700;color:#1f2328;margin:1rem 0 0.4rem 0;">'
+            f'{title} <span style="color:#8b949e;font-size:0.72rem;font-weight:400;">{hint}</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<table class="cex-table"><thead><tr>'
+            '<th style="text-align:left;">지표</th>'
+            '<th>현재값</th><th>점수</th>'
+            '<th>가중치</th><th style="text-align:left;">판단</th>'
+            '</tr></thead><tbody>'
+            + "".join(rows) + '</tbody></table>',
+            unsafe_allow_html=True,
+        )
+
+    _ind_table("📈 장기 가치 지표", "싼가? · 온체인 밸류에이션 (느리게 변동, 1~2일 지연 가능)",
+               buy_sig.get("value_indicators", []))
+    _ind_table("⏱️ 단기 타이밍 지표", "지금 사도 되나? · 추세·청산·파생 (실시간)",
+               buy_sig.get("timing_indicators", []))
+
     st.markdown(
         '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;'
         'padding:0.8rem 1.25rem;margin-top:0.8rem;font-size:0.72rem;color:#8b949e;line-height:1.6;">'
         '⚠️ <b>면책 고지:</b> 이 판단은 온체인 데이터의 통계적 분석에 기반한 <b>참고 정보</b>이며, '
         '투자 자문이 아닙니다. 실제 투자 결정은 본인의 판단과 책임 하에 이루어져야 합니다. '
-        '매수 점수가 높다고 반드시 가격이 오르는 것은 아니며, 과거 패턴이 미래를 보장하지 않습니다. '
-        '점수 100 = 역사적으로 저평가 구간, 0 = 역사적으로 과열 구간을 의미합니다.'
+        '<b>장기 가치</b> 점수는 저평가 정도(100=역사적 바닥, 0=역사적 고점)를, '
+        '<b>단기 타이밍</b> 점수는 지금 진입의 안전성(100=우호적, 0=급락/청산 위험)을 의미합니다. '
+        '가치가 높아도 단기 타이밍이 낮으면(급락 중) 분할·관망이 안전합니다.'
         '</div>',
         unsafe_allow_html=True,
     )

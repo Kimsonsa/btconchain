@@ -1034,24 +1034,125 @@ def _lerp_score(value, low, high):
     return max(0.0, min(100.0, (1.0 - (value - low) / (high - low)) * 100.0))
 
 
-def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
+def _momentum_timing_score(chg24, chg7):
+    """단기 가격 추세를 '진입 타이밍' 점수로 변환.
+    급락일수록 낮고(떨어지는 칼날), 횡보~완만 상승이 가장 높으며, 급등 추격은 감점.
     """
-    온체인 + 파생상품 지표를 종합하여 매수 적기 판단.
+    if chg24 is None:
+        return None
+    if chg24 <= -8:
+        base = 8.0
+    elif chg24 <= -5:
+        base = 22.0
+    elif chg24 <= -3:
+        base = 38.0
+    elif chg24 <= -1:
+        base = 50.0
+    elif chg24 < 1:
+        base = 60.0
+    elif chg24 < 4:
+        base = 66.0
+    elif chg24 < 8:
+        base = 54.0
+    else:
+        base = 42.0  # 급등 추격 매수 위험
+    # 주간 추세로 보정 (장기간 급락이면 추가 감점)
+    if chg7 is not None:
+        if chg7 <= -15:
+            base -= 12.0
+        elif chg7 <= -8:
+            base -= 6.0
+        elif chg7 >= 20:
+            base -= 5.0
+    return max(0.0, min(100.0, base))
+
+
+def _liq_timing_score(liq):
+    """청산 비대칭을 '진입 타이밍' 점수로 변환.
+    롱 대량 청산(=강제 매도 캐스케이드)이면 하락 가속 → 낮은 점수(진입 보류).
+    반환: (score, desc) 또는 (None, None).
+    """
+    if not liq or not liq.get("total_liq_usd"):
+        return None, None
+    long_pct = liq.get("long_pct", 50.0)
+    total = liq.get("total_liq_usd", 0) or 0
+    if total < 500000:
+        return 55.0, "청산 미미 — 변동성 낮음"
+    if long_pct >= 70:
+        return 18.0, "롱 대량 청산 — 하락 가속, 진입 보류"
+    if long_pct >= 55:
+        return 36.0, "롱 청산 우세 — 하락 압력"
+    if long_pct <= 30:
+        return 52.0, "숏 청산 우세 — 반등 시도(변동성 주의)"
+    return 46.0, "롱/숏 청산 균형"
+
+
+# value tier(가치) × timing tier(타이밍) → (등급, 라벨, 요약) 매트릭스
+_SIGNAL_MATRIX = {
+    ("cheap", "good"): ("A+", "💎 적극 매수 구간",
+        "장기 저평가에 단기 추세도 우호적입니다. 위험 대비 보상이 양호한 구간입니다."),
+    ("cheap", "neutral"): ("A", "🟢 분할 매수 구간",
+        "온체인 지표는 저평가를 가리키고 단기 흐름은 중립입니다. 분할 매수를 고려할 수 있습니다."),
+    ("cheap", "bad"): ("B", "🟠 저평가 + 급락 진행 — 분할/대기",
+        "장기적으로는 싼 구간이나 단기 급락·청산이 진행 중입니다. 성급한 일괄 매수보다 급락 진정을 확인하며 소액 분할로 접근하는 것이 안전합니다."),
+    ("fair", "good"): ("B+", "🟢 매수 고려 구간",
+        "가치는 적정 범위, 단기 추세는 우호적입니다. 추세를 보며 진입을 고려할 수 있습니다."),
+    ("fair", "neutral"): ("B", "🟡 중립 (관망)",
+        "가치·추세 모두 뚜렷한 방향성이 없습니다. 급한 매수보다 관망이 적절합니다."),
+    ("fair", "bad"): ("C", "🟠 관망 — 단기 하락 위험",
+        "가치는 적정하나 단기 하락 압력이 큽니다. 추세가 안정될 때까지 관망이 적절합니다."),
+    ("rich", "good"): ("C", "🟡 단기 반등 가능 · 고점 경계",
+        "단기 흐름은 우호적이나 밸류에이션이 부담스럽습니다. 추격보다 차익 관리가 적절합니다."),
+    ("rich", "neutral"): ("D", "🟠 과열 주의",
+        "다수 지표가 과열을 시사합니다. 신규 매수보다 보유 유지·차익 실현을 고려할 구간입니다."),
+    ("rich", "bad"): ("F", "🔴 고점 경계 + 급락 — 리스크 관리",
+        "고평가 국면에서 단기 급락까지 겹쳤습니다. 역사적 고점권 리스크가 크며 적극적 리스크 관리가 필요합니다."),
+}
+
+
+def _value_tier(v):
+    if v is None:
+        return "fair"
+    if v >= 60:
+        return "cheap"
+    if v >= 42:
+        return "fair"
+    return "rich"
+
+
+def _timing_tier(t):
+    if t is None:
+        return "neutral"
+    if t >= 55:
+        return "good"
+    if t >= 38:
+        return "neutral"
+    return "bad"
+
+
+def compute_buy_signal(report, premium=None, long_short=None,
+                       derivatives=None, liquidations=None):
+    """
+    온체인/파생 지표를 두 축으로 분리해 매수 적기 판단.
+
+    - 장기 가치(value) 축: MVRV·NUPL·공포탐욕·Puell·SOPR·Z-Score → "싼가?"
+    - 단기 타이밍(timing) 축: 추세·청산·펀딩·롱숏·프리미엄 → "지금 사도 되나?"
+    두 점수를 매트릭스로 결합해 등급을 매긴다. (예: 저평가 + 급락 = B "분할/대기")
 
     반환값: {
-        "score": 0~100 (100 = 극매수 적기),
-        "grade": "A+" ~ "F",
-        "label": "적극 매수 구간" 등,
-        "summary": 한 줄 요약,
-        "indicators": [{"name", "value", "score", "weight", "signal", "desc"}, ...],
-        "bull_count": 강세 지표 수,
-        "bear_count": 약세 지표 수,
-        "neutral_count": 중립 지표 수,
+        "score": 0~100 (결합 점수),
+        "value_score": 0~100, "timing_score": 0~100,
+        "value_tier": "cheap|fair|rich", "timing_tier": "good|neutral|bad",
+        "grade": "A+"~"F", "label", "summary",
+        "value_indicators": [...], "timing_indicators": [...],
+        "bull_count", "bear_count", "neutral_count", "indicator_count",
+        "short_term_warning": bool, "short_term_note": str,
     }
     """
-    indicators = []
+    value_inds = []
+    timing_inds = []
 
-    def add(name, value, score, weight, desc):
+    def add(bucket, name, value, score, weight, desc):
         if score is None:
             return
         if score >= 65:
@@ -1060,7 +1161,7 @@ def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
             signal = "bear"
         else:
             signal = "neutral"
-        indicators.append({
+        bucket.append({
             "name": name,
             "value": value,
             "score": round(score, 1),
@@ -1072,9 +1173,10 @@ def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
     va = report.get("valuation", {})
     se = report.get("sentiment", {})
     ad = report.get("advanced", {})
+    pm = report.get("price_market", {})
 
-    # ── [1] MVRV (가중치 3) ──────────────────────────────────────────────
-    # 시가총액/실현시가총액. <1 극저평가, >3.7 극고평가
+    # ═══════ 장기 가치(value) 축 ═══════════════════════════════════════════
+    # ── MVRV (가중치 3) — 시가총액/실현시가총액. <1 극저평가, >3.7 극고평가
     mvrv = va.get("mvrv")
     s = _lerp_score(mvrv, 0.7, 4.0)
     if mvrv is not None:
@@ -1088,10 +1190,9 @@ def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
             desc = "과열 진입"
         else:
             desc = "역사적 고점권"
-        add("MVRV", "%.2f" % mvrv, s, 3, desc)
+        add(value_inds, "MVRV", "%.2f" % mvrv, s, 3, desc)
 
-    # ── [2] NUPL (가중치 3) ──────────────────────────────────────────────
-    # 순미실현손익. <0 항복, >0.75 도취
+    # ── NUPL (가중치 3) — 순미실현손익. <0 항복, >0.75 도취
     nupl = va.get("nupl")
     s = _lerp_score(nupl, -0.1, 0.75)
     if nupl is not None:
@@ -1105,13 +1206,12 @@ def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
             desc = "확신/부정 구간"
         else:
             desc = "도취 — 고점 경계"
-        add("NUPL", "%.3f" % nupl, s, 3, desc)
+        add(value_inds, "NUPL", "%.3f" % nupl, s, 3, desc)
 
-    # ── [3] 공포탐욕 지수 (가중치 2) ─────────────────────────────────────
-    # 0=극공포(매수), 100=극탐욕(매도)
+    # ── 공포탐욕 지수 (가중치 2) — 0=극공포(매수), 100=극탐욕(매도)
     fg = se.get("value")
     if fg is not None:
-        s = 100.0 - fg  # 공포일수록 매수 점수 높음
+        s = 100.0 - fg
         if fg <= 25:
             desc = "극심한 공포 — 역사적 매수 기회"
         elif fg <= 45:
@@ -1122,10 +1222,9 @@ def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
             desc = "탐욕 — 주의"
         else:
             desc = "극심한 탐욕 — 고점 경계"
-        add("공포탐욕", str(fg), s, 2, desc)
+        add(value_inds, "공포탐욕", str(fg), s, 2, desc)
 
-    # ── [4] Puell Multiple (가중치 2) ────────────────────────────────────
-    # 채굴자 수익. <0.5 채굴자 항복(매수), >4 고수익(매도)
+    # ── Puell Multiple (가중치 2) — 채굴자 수익. <0.5 항복(매수), >4 고수익(매도)
     puell = ad.get("puell_multiple")
     s = _lerp_score(puell, 0.3, 4.0)
     if puell is not None:
@@ -1137,10 +1236,9 @@ def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
             desc = "적정 수익"
         else:
             desc = "고수익 — 매도 압력 가능"
-        add("Puell", "%.2f" % puell, s, 2, desc)
+        add(value_inds, "Puell", "%.2f" % puell, s, 2, desc)
 
-    # ── [5] SOPR (가중치 2) ──────────────────────────────────────────────
-    # 실현 손익 비율. <1 손실 실현(매수), >1.05 이익 실현(매도)
+    # ── SOPR (가중치 2) — 실현 손익 비율. <1 손실 실현(매수), >1.05 이익 실현(매도)
     sopr = ad.get("sopr")
     s = _lerp_score(sopr, 0.92, 1.08)
     if sopr is not None:
@@ -1152,9 +1250,9 @@ def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
             desc = "소폭 이익 실현"
         else:
             desc = "대규모 이익 실현 — 매도 압력"
-        add("SOPR", "%.3f" % sopr, s, 2, desc)
+        add(value_inds, "SOPR", "%.3f" % sopr, s, 2, desc)
 
-    # ── [6] MVRV Z-Score (가중치 2) ──────────────────────────────────────
+    # ── MVRV Z-Score (가중치 2)
     zscore = ad.get("mvrv_zscore")
     s = _lerp_score(zscore, -0.5, 7.0)
     if zscore is not None:
@@ -1166,57 +1264,35 @@ def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
             desc = "적정~고평가"
         else:
             desc = "극고평가 — 역사적 고점"
-        add("Z-Score", "%.2f" % zscore, s, 2, desc)
+        add(value_inds, "Z-Score", "%.2f" % zscore, s, 2, desc)
 
-    # ── [7] 코인베이스 프리미엄 (가중치 1) ───────────────────────────────
-    if premium:
-        cb_pct = premium.get("coinbase_premium_pct")
-        if cb_pct is not None:
-            # 양수 프리미엄 = 기관 매수 = 강세 신호
-            s = max(0, min(100, 50 + cb_pct * 100))  # ±0.5% → 0~100
-            if cb_pct > 0.1:
-                desc = "미국 기관 매수세 유입"
-            elif cb_pct > -0.05:
-                desc = "중립"
-            else:
-                desc = "미국 매도 압력"
-            add("CB 프리미엄", "%+.3f%%" % cb_pct, s, 1, desc)
-
-    # ── [8] 김치 프리미엄 (가중치 1) ─────────────────────────────────────
-    if premium:
-        kp = premium.get("kimchi_premium_pct")
-        if kp is not None:
-            # 높은 김프(>5%) = 과열, 역프리미엄 = 매수 기회
-            s = _lerp_score(kp, -3.0, 8.0)
-            if kp > 5:
-                desc = "한국 과열 — 고점 경계"
-            elif kp > 2:
-                desc = "한국 매수세 강함"
-            elif kp > -1:
-                desc = "중립"
-            else:
-                desc = "역프리미엄 — 매수 기회"
-            add("김치 프리미엄", "%+.2f%%" % kp, s, 1, desc)
-
-    # ── [9] 롱/숏 비율 (가중치 1, 역행 지표) ─────────────────────────────
-    if long_short and long_short.get("avg_long_pct"):
-        avg_l = long_short["avg_long_pct"]
-        # 롱 과도 쏠림(>70%) = 숏스퀴즈 위험이지만 과열 신호 → 매수 점수 낮음
-        s = _lerp_score(avg_l, 35, 75)
-        if avg_l > 70:
-            desc = "롱 과열 — 숏스퀴즈 위험"
-        elif avg_l > 55:
-            desc = "롱 우위 — 상승 기대감"
-        elif avg_l > 45:
-            desc = "균형 상태"
+    # ═══════ 단기 타이밍(timing) 축 ════════════════════════════════════════
+    # ── 단기 추세 (가중치 3) — 24h/7d 변동률. 급락이면 진입 보류
+    chg24 = pm.get("change_24h_pct")
+    chg7 = pm.get("change_7d_pct")
+    ms = _momentum_timing_score(chg24, chg7)
+    if ms is not None:
+        if chg24 <= -7:
+            desc = "급락 진행 — 진입 보류/관망"
+        elif chg24 <= -3:
+            desc = "단기 하락 — 분할 접근 권장"
+        elif chg24 < 1:
+            desc = "횡보 — 안정 구간"
+        elif chg24 < 8:
+            desc = "완만한 상승 흐름"
         else:
-            desc = "숏 우위 — 반등 가능성"
-        add("롱/숏", "%.1f%% 롱" % avg_l, s, 1, desc)
+            desc = "급등 — 추격 매수 위험"
+        add(timing_inds, "단기추세", "%+.1f%% (24h)" % chg24, ms, 3, desc)
 
-    # ── [10] 펀딩레이트 (가중치 1) ───────────────────────────────────────
+    # ── 청산 (가중치 3) — 롱 대량 청산 = 하락 가속 = 진입 보류
+    ls_score, ls_desc = _liq_timing_score(liquidations)
+    if ls_score is not None:
+        lp = liquidations.get("long_pct", 0)
+        add(timing_inds, "청산", "롱청산 %.0f%%" % lp, ls_score, 3, ls_desc)
+
+    # ── 펀딩레이트 (가중치 2) — 음수=숏 비용(역발상 매수), 양수 과도=과열
     if derivatives and derivatives.get("avg_funding_rate") is not None:
         fr = derivatives["avg_funding_rate"]
-        # 음수 = 숏 비용 지불 = 매수 신호, 양수 과도 = 과열
         s = _lerp_score(fr, -0.02, 0.08)
         if fr < -0.005:
             desc = "숏 과열 — 역발상 매수 구간"
@@ -1226,53 +1302,106 @@ def compute_buy_signal(report, premium=None, long_short=None, derivatives=None):
             desc = "롱 비용 증가"
         else:
             desc = "과열 — 레버리지 청산 위험"
-        add("펀딩레이트", "%.4f" % fr, s, 1, desc)
+        add(timing_inds, "펀딩레이트", "%.4f" % fr, s, 2, desc)
 
-    # ── 종합 점수 계산 (가중 평균) ───────────────────────────────────────
-    if not indicators:
+    # ── 롱/숏 비율 (가중치 1, 역행 지표)
+    if long_short and long_short.get("avg_long_pct"):
+        avg_l = long_short["avg_long_pct"]
+        s = _lerp_score(avg_l, 35, 75)
+        if avg_l > 70:
+            desc = "롱 과열 — 숏스퀴즈 위험"
+        elif avg_l > 55:
+            desc = "롱 우위 — 상승 기대감"
+        elif avg_l > 45:
+            desc = "균형 상태"
+        else:
+            desc = "숏 우위 — 반등 가능성"
+        add(timing_inds, "롱/숏", "%.1f%% 롱" % avg_l, s, 1, desc)
+
+    # ── 코인베이스 프리미엄 (가중치 1) — 양수=미국 기관 매수
+    if premium:
+        cb_pct = premium.get("coinbase_premium_pct")
+        if cb_pct is not None:
+            s = max(0, min(100, 50 + cb_pct * 100))
+            if cb_pct > 0.1:
+                desc = "미국 기관 매수세 유입"
+            elif cb_pct > -0.05:
+                desc = "중립"
+            else:
+                desc = "미국 매도 압력"
+            add(timing_inds, "CB 프리미엄", "%+.3f%%" % cb_pct, s, 1, desc)
+
+    # ── 김치 프리미엄 (가중치 1)
+    if premium:
+        kp = premium.get("kimchi_premium_pct")
+        if kp is not None:
+            s = _lerp_score(kp, -3.0, 8.0)
+            if kp > 5:
+                desc = "한국 과열 — 고점 경계"
+            elif kp > 2:
+                desc = "한국 매수세 강함"
+            elif kp > -1:
+                desc = "중립"
+            else:
+                desc = "역프리미엄 — 매수 기회"
+            add(timing_inds, "김치 프리미엄", "%+.2f%%" % kp, s, 1, desc)
+
+    # ═══════ 점수 결합 ═════════════════════════════════════════════════════
+    if not value_inds and not timing_inds:
         return None
 
-    total_weight = sum(ind["weight"] for ind in indicators)
-    weighted_sum = sum(ind["score"] * ind["weight"] for ind in indicators)
-    final_score = round(weighted_sum / total_weight, 1) if total_weight else 0
+    def _wavg(inds):
+        if not inds:
+            return None
+        tw = sum(i["weight"] for i in inds)
+        return round(sum(i["score"] * i["weight"] for i in inds) / tw, 1) if tw else None
 
-    bull_count = sum(1 for i in indicators if i["signal"] == "bull")
-    bear_count = sum(1 for i in indicators if i["signal"] == "bear")
-    neutral_count = sum(1 for i in indicators if i["signal"] == "neutral")
+    value_score = _wavg(value_inds)
+    timing_score = _wavg(timing_inds)
 
-    # 등급
-    if final_score >= 85:
-        grade, label = "A+", "💎 적극 매수 구간"
-        summary = "대부분의 온체인 지표가 역사적 저평가를 가리킵니다. 장기 투자 관점에서 매우 유리한 구간입니다."
-    elif final_score >= 70:
-        grade, label = "A", "🟢 매수 유리 구간"
-        summary = "다수의 지표가 저평가를 시사합니다. 분할 매수를 고려할 수 있는 구간입니다."
-    elif final_score >= 60:
-        grade, label = "B+", "🟢 매수 고려 구간"
-        summary = "시장이 저평가~적정 범위에 있습니다. 공포 심리가 있다면 기회일 수 있습니다."
-    elif final_score >= 50:
-        grade, label = "B", "🟡 중립 (관망)"
-        summary = "뚜렷한 방향성 없이 균형 상태입니다. 급한 매수보다는 관망이 적절합니다."
-    elif final_score >= 40:
-        grade, label = "C", "🟡 중립~주의"
-        summary = "일부 지표가 과열을 시사합니다. 신규 매수보다는 보유 유지가 적절합니다."
-    elif final_score >= 25:
-        grade, label = "D", "🟠 과열 주의"
-        summary = "다수의 지표가 과열을 가리킵니다. 분할 매도나 차익 실현을 고려할 구간입니다."
+    # 결합 점수(게이지용): 가치 0.6 + 타이밍 0.4, 한쪽만 있으면 그 값 사용
+    if value_score is not None and timing_score is not None:
+        final_score = round(value_score * 0.6 + timing_score * 0.4, 1)
     else:
-        grade, label = "F", "🔴 고점 경계"
-        summary = "대부분의 지표가 극도의 과열을 가리킵니다. 역사적 고점권에 해당하며 리스크 관리가 필요합니다."
+        final_score = value_score if value_score is not None else timing_score
+
+    vt = _value_tier(value_score)
+    tt = _timing_tier(timing_score)
+    grade, label, summary = _SIGNAL_MATRIX[(vt, tt)]
+
+    all_inds = value_inds + timing_inds
+    bull_count = sum(1 for i in all_inds if i["signal"] == "bull")
+    bear_count = sum(1 for i in all_inds if i["signal"] == "bear")
+    neutral_count = sum(1 for i in all_inds if i["signal"] == "neutral")
+
+    # 단기 급락/위험 경고 (가치와 무관하게 표시)
+    short_term_warning = (timing_score is not None and timing_score < 38)
+    short_term_note = ""
+    if short_term_warning:
+        if vt == "cheap":
+            short_term_note = ("장기 지표는 저평가지만 단기 급락·청산이 진행 중입니다. "
+                               "일괄 매수보다 분할·관망으로 접근하세요.")
+        else:
+            short_term_note = "단기 하락 압력이 큽니다. 추세 안정 전까지 신규 진입에 주의하세요."
 
     return {
         "score": final_score,
+        "value_score": value_score,
+        "timing_score": timing_score,
+        "value_tier": vt,
+        "timing_tier": tt,
         "grade": grade,
         "label": label,
         "summary": summary,
-        "indicators": indicators,
+        "value_indicators": value_inds,
+        "timing_indicators": timing_inds,
+        "indicators": all_inds,  # 하위 호환
         "bull_count": bull_count,
         "bear_count": bear_count,
         "neutral_count": neutral_count,
-        "indicator_count": len(indicators),
+        "indicator_count": len(all_inds),
+        "short_term_warning": short_term_warning,
+        "short_term_note": short_term_note,
     }
 
 
